@@ -1,0 +1,6 @@
+*.weights
+*.tflite
+*.log
+*.cfg
+*.csv
+coco
