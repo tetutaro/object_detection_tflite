@@ -135,9 +135,9 @@ class Camera(object):
         return
 
 
-class RaspberryPiCamera(Camera):
+class PiCamera(Camera):
     def __init__(
-        self: RaspberryPiCamera,
+        self: PiCamera,
         width: int,
         height: int,
         hflip: bool,
@@ -157,11 +157,11 @@ class RaspberryPiCamera(Camera):
         self._camera.vflip = vflip
         return
 
-    def start(self: RaspberryPiCamera) -> None:
+    def start(self: PiCamera) -> None:
         self._camera.start_preview()
         return
 
-    def yield_image(self: RaspberryPiCamera) -> Generator[Image, None]:
+    def yield_image(self: PiCamera) -> Generator[Image, None]:
         self._stream = io.BytesIO()
         for _ in self._camera.capture_continuous(
             self._stream,
@@ -173,20 +173,20 @@ class RaspberryPiCamera(Camera):
             yield image
         return
 
-    def update(self: RaspberryPiCamera) -> None:
+    def update(self: PiCamera) -> None:
         super().update()
         self._stream.seek(0)
         self._stream.truncate()
         return
 
-    def stop(self: RaspberryPiCamera) -> None:
+    def stop(self: PiCamera) -> None:
         self._camera.stop_preview()
         return
 
 
-class MacCamera(Camera):
+class CvCamera(Camera):
     def __init__(
-        self: MacCamera,
+        self: CvCamera,
         width: int,
         height: int,
         hflip: bool,
@@ -233,13 +233,13 @@ class MacCamera(Camera):
             self.flipcode = None
         return
 
-    def start(self: MacCamera) -> None:
+    def start(self: CvCamera) -> None:
         self.window = 'Object Detection'
         cv2.namedWindow(self.window, cv2.WINDOW_GUI_NORMAL)
         cv2.resizeWindow(self.window, *self._dims)
         return
 
-    def yield_image(self: MacCamera) -> Generator[Image, None]:
+    def yield_image(self: CvCamera) -> Generator[Image, None]:
         while True:
             _, image = self._camera.read()
             if image is None:
@@ -256,7 +256,7 @@ class MacCamera(Camera):
             yield Image.fromarray(image.copy()[..., ::-1])
         return
 
-    def update(self: MacCamera) -> None:
+    def update(self: CvCamera) -> None:
         overlay = np.array(self._buffer, dtype=np.uint8)
         overlay = cv2.cvtColor(overlay, cv2.COLOR_RGBA2BGRA)
         image = cv2.addWeighted(
@@ -269,7 +269,7 @@ class MacCamera(Camera):
             raise KeyboardInterrupt
         return
 
-    def stop(self: MacCamera) -> None:
+    def stop(self: CvCamera) -> None:
         cv2.destroyAllWindows()
         self._camera.release()
         return
@@ -284,13 +284,13 @@ def get_camera(
     fontsize: int
 ) -> Camera:
     if platform.system() == 'Linux':  # RaspberryPi
-        camera = RaspberryPiCamera(
+        camera = PiCamera(
             width=width, height=height,
             hflip=hflip, vflip=vflip,
             threshold=threshold, fontsize=fontsize
         )
     elif platform.system() == 'Darwin':  # MacOS
-        camera = MacCamera(
+        camera = CvCamera(
             width=width, height=height,
             hflip=hflip, vflip=vflip,
             threshold=threshold, fontsize=fontsize
@@ -308,25 +308,41 @@ class Detector(object):
         hflip: bool,
         vflip: bool,
         model_path: str,
-        tpu: bool,
         target: str,
         threshold: float,
         fontsize: int
     ) -> None:
+        if 'yolo' in model_path:
+            self.is_yolo = True
+            self.yolo_version = os.path.splitext(
+                os.path.basename(model_path)
+            )[0]
+        else:
+            self.is_yolo = False
+        if 'edgetpu' in model_path:
+            self.is_tpu = True
+        else:
+            self.is_tpu = False
         # load label
         if not os.path.exists('models/coco_labels.txt'):
             raise Exception("do download_modes.sh")
         self.label2id = dict()
         self.id2label = dict()
         with open('models/coco_labels.txt', 'rt', encoding='utf-8') as rf:
+            off = 0
             line = rf.readline()
             while line:
                 info = [x.strip() for x in line.strip().split(' ', 1)]
                 idx = int(info[0])
                 label = info[1].replace(' ', '_')
-                self.id2label[idx] = label
-                self.label2id[label] = idx
+                if self.is_yolo:
+                    self.id2label[off] = label
+                    self.label2id[label] = off
+                else:
+                    self.id2label[idx] = label
+                    self.label2id[label] = idx
                 line = rf.readline()
+                off += 1
         # set target
         if target == 'all':
             self.target_id = -1
@@ -335,7 +351,7 @@ class Detector(object):
                 raise ValueError('target not in models/coco_labels.txt')
             self.target_id = self.label2id[target]
         # load interpreter
-        if tpu:
+        if self.is_tpu:
             delegates = [
                 tflite.load_delegate(EDGETPU_SHARED_LIB, {})
             ]
@@ -353,10 +369,13 @@ class Detector(object):
         self.image_height = shape[1]
         self.image_width = shape[2]
         output_details = self.interpreter.get_output_details()
-        self.boxes_index = output_details[0]['index']
-        self.class_index = output_details[1]['index']
-        self.score_index = output_details[2]['index']
-        self.count_index = output_details[3]['index']
+        self.output_indexes = [
+            output_details[i]['index'] for i in range(len(output_details))
+        ]
+        if self.is_yolo:
+            self.get_frames = self.get_frames_yolo
+        else:
+            self.get_frames = self.get_frames_ssd
         # set paramters
         self.camera_width = width
         self.camera_height = height
@@ -366,27 +385,13 @@ class Detector(object):
         self.fontsize = fontsize
         return
 
-    def detect_objects(self: Detector, image: Image) -> Tuple[List, float]:
-        # set input
-        image = image.resize(
-            (self.image_width, self.image_height),
-            Image.ANTIALIAS
-        )
-        self.interpreter.set_tensor(
-            self.input_index,
-            np.array(image)[np.newaxis, ...]
-        )
-        # invoke
-        start_time = time.perf_counter()
-        self.interpreter.invoke()
-        end_time = time.perf_counter()
-        elapsed_ms = (end_time - start_time) * 1000
-        # get output
-        boxes = self.interpreter.get_tensor(self.boxes_index).squeeze()
-        class_ids = self.interpreter.get_tensor(self.class_index).squeeze()
-        scores = self.interpreter.get_tensor(self.score_index).squeeze()
-        count = int(self.interpreter.get_tensor(self.count_index).squeeze())
-        results = list()
+    def get_frames_ssd(self: Detector, outputs: List) -> List:
+        assert(len(outputs) == 4)
+        boxes = outputs[0].squeeze()
+        class_ids = outputs[1].squeeze()
+        scores = outputs[2].squeeze()
+        count = int(outputs[3].squeeze())
+        frames = list()
         for i in range(count):
             cid = int(class_ids[i])
             prob = float(scores[i])
@@ -402,12 +407,153 @@ class Detector(object):
             xmin = max(0, int(xmin * self.camera_width))
             ymax = min(self.camera_height, int(ymax * self.camera_height))
             xmax = min(self.camera_width, int(xmax * self.camera_width))
-            results.append({
+            frames.append({
                 'name': name,
                 'prob': prob,
                 'bbox': (xmin, ymin, xmax, ymax),
             })
-        return results, elapsed_ms
+        if len(frames) > 0:
+            print(frames)
+        return frames
+
+    @staticmethod
+    def sigmoid(x: np.array) -> np.array:
+        return 1. / (1. + np.exp(-x))
+
+    def get_frames_yolo(self: Detector, outputs: List) -> List:
+        frames = list()
+        if self.yolo_version == 'yolov3-tiny':
+            strides = [16, 32]
+            anchors = [
+                [(10, 14), (23, 27), (37, 58)],
+                [(81, 82), (135, 169), (344, 319)],
+            ]
+            xyscale = [1.0, 1.0]
+        elif self.yolo_version == 'yolov3':
+            strides = [8, 16, 32]
+            anchors = [
+                [(10, 13), (16, 30), (33, 23)],
+                [(30, 61), (62, 45), (59, 119)],
+                [(116, 90), (156, 198), (373, 326)],
+            ]
+            xyscale = [1.0, 1.0, 1.0]
+        elif self.yolo_version == 'yolov4':
+            strides = [8, 16, 32]
+            anchors = np.array([
+                [(12, 16), (19, 36), (40, 28)],
+                [(36, 75), (76, 55), (72, 146)],
+                [(142, 110), (192, 243), (459, 401)],
+            ])
+            xyscale = [1.2, 1.1, 1.05]
+        else:
+            raise NotImplementedError()
+        assert(len(outputs) == len(strides))
+        pred_bbox = list()
+        for i, pred in enumerate(outputs):
+            try:
+                pred_shape = pred.shape
+                pred_x = pred_shape[1]
+                pred_y = pred_shape[2]
+                raw_xy = pred[:, :, :, :, 0:2]
+                raw_wh = pred[:, :, :, :, 2:4]
+                others = pred[:, :, :, :, 4:]
+                xy_grid = np.meshgrid(np.arange(pred_x), np.arange(pred_y))
+                xy_grid = np.expand_dims(np.stack(xy_grid, axis=-1), axis=2)
+                xy_grid = np.tile(
+                    np.expand_dims(xy_grid, axis=0),
+                    [1, 1, 1, 3, 1]
+                )
+                xy_grid = xy_grid.astype(np.float)
+                pred_xy = ((
+                    self.sigmoid(raw_xy) * xyscale[i]
+                ) - 0.5 * (xyscale[i] - 1) + xy_grid) * strides[i]
+                pred_wh = (np.exp(raw_wh) * anchors[i])
+                pred_bbox.append(
+                    np.concatenate([pred_xy, pred_wh, others], axis=-1)
+                )
+            except Exception:
+                continue
+        pred_bbox = [np.reshape(x, (-1, x.shape[-1])) for x in pred_bbox]
+        pred_bbox = np.concatenate(pred_bbox, axis=0)
+        valid_scale = [0, np.inf]
+        pred_xywh = pred_bbox[:, 0:4]
+        pred_conf = pred_bbox[:, 4]
+        pred_prob = pred_bbox[:, 5:]
+        # (x, y, w, h) -> (xmin, ymin, xmax, ymax)
+        pred_coor = np.concatenate([
+            pred_xywh[:, :2] - pred_xywh[:, 2:] * 0.5,
+            pred_xywh[:, :2] + pred_xywh[:, 2:] * 0.5
+        ], axis=-1)
+        # (xmin, ymin, xmax, ymax) -> (xmin_org, ymin_org, xmax_org, ymax_org)
+        resize_ratio = min(
+            self.image_width / self.camera_width,
+            self.image_height / self.camera_height
+        )
+        dw = (self.image_width - resize_ratio * self.camera_width) / 2
+        dh = (self.image_height - resize_ratio * self.camera_height) / 2
+        pred_coor[:, 0::2] = 1.0 * (pred_coor[:, 0::2] - dw) / resize_ratio
+        pred_coor[:, 1::2] = 1.0 * (pred_coor[:, 1::2] - dh) / resize_ratio
+        # clip some boxes those are out of range
+        pred_coor = np.concatenate([
+            np.maximum(pred_coor[:, :2], [0, 0]),
+            np.minimum(pred_coor[:, 2:], [1, 1])
+        ], axis=-1)
+        invalid_mask = np.logical_or(
+            (pred_coor[:, 0] > pred_coor[:, 2]),
+            (pred_coor[:, 1] > pred_coor[:, 3])
+        )
+        pred_coor[invalid_mask] = 0
+        # discard some invalid boxes
+        bboxes_scale = np.sqrt(np.multiply.reduce(
+                pred_coor[:, 2:4] - pred_coor[:, 0:2], axis=-1
+        ))
+        scale_mask = np.logical_and(
+            (valid_scale[0] < bboxes_scale),
+            (bboxes_scale < valid_scale[1])
+        )
+        # discard some boxes with low scores
+        classes = np.argmax(pred_prob, axis=-1)
+        scores = pred_conf * pred_prob[np.arange(len(pred_coor)), classes]
+        score_mask = scores > self.threshold
+        mask = np.logical_and(scale_mask, score_mask)
+        boxes = pred_coor[mask]
+        class_ids = classes[mask]
+        scores = scores[mask]
+        assert(len(boxes.shape) == 2)
+        assert(len(class_ids.shape) == 1)
+        assert(len(scores.shape) == 1)
+        assert(boxes.shape[1] == 4)
+        assert(boxes.shape[0] == class_ids.shape[0])
+        assert(boxes.shape[0] == scores.shape[0])
+        print(class_ids)
+        if boxes.shape[0] == 0:
+            return frames
+        # utils.nms(bbox, 0,213, method='nms')
+        # utils.draw_bbox
+        return self.get_frames_ssd([boxes, class_ids, scores])
+
+    def detect_objects(self: Detector, image: Image) -> List:
+        # set input
+        image = image.resize(
+            (self.image_width, self.image_height),
+            Image.ANTIALIAS
+        )
+        if self.is_yolo:
+            image = np.array(image, dtype=np.float32)[np.newaxis, ...]
+        else:
+            image = np.array(image, dtype=np.uint8)[np.newaxis, ...]
+        self.interpreter.set_tensor(
+            self.input_index, image
+        )
+        # invoke
+        self.interpreter.invoke()
+        # get outputs
+        outputs = [
+            self.interpreter.get_tensor(i) for i in self.output_indexes
+        ]
+        # get frames from outputs
+        frames = self.get_frames(outputs)
+        return frames
 
     def run(self: Detector) -> None:
         camera = get_camera(
@@ -421,7 +567,10 @@ class Detector(object):
         camera.start()
         try:
             for image in camera.yield_image():
-                objects, elapsed_ms = self.detect_objects(image)
+                start_time = time.perf_counter()
+                objects = self.detect_objects(image)
+                end_time = time.perf_counter()
+                elapsed_ms = (end_time - start_time) * 1000
                 camera.clear()
                 camera.draw_objects(objects)
                 camera.draw_time(elapsed_ms)
@@ -455,13 +604,32 @@ def main(
     threshold: float,
     fontsize: int
 ) -> None:
-    model_path = 'models/mobilenet_ssd_v2_'
-    if model == 'face':
+    if model == 'yolov3':
+        model_path = 'yolo/yolov3'
+        if tpu:
+            model_path += '_edgetpu.tflite'
+        else:
+            model_path += '.tflite'
+    elif model == 'yolov3-tiny':
+        model_path = 'yolo/yolov3-tiny'
+        if tpu:
+            model_path += '_edgetpu.tflite'
+        else:
+            model_path += '.tflite'
+    elif model == 'yolov4':
+        model_path = 'yolo/yolov4'
+        if tpu:
+            model_path += '_edgetpu.tflite'
+        else:
+            model_path += '.tflite'
+    elif model == 'face':
+        model_path = 'models/mobilenet_ssd_v2_'
         if tpu:
             model_path += 'face_quant_postprocess_edgetpu.tflite'
         else:
             model_path += 'face_quant_postprocess.tflite'
     else:
+        model_path = 'models/mobilenet_ssd_v2_'
         if tpu:
             model_path += 'coco_quant_postprocess_edgetpu.tflite'
         else:
@@ -474,7 +642,6 @@ def main(
         hflip=hflip,
         vflip=vflip,
         model_path=model_path,
-        tpu=tpu,
         target=target,
         threshold=threshold,
         fontsize=fontsize

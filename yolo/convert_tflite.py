@@ -5,7 +5,7 @@ from absl import app, flags, logging
 from absl.flags import FLAGS
 import numpy as np
 import glob
-from yolo_models import YoloV3, YoloV3_tiny, YoloV4
+from yolo_models import YoloV3, YoloV3_tiny, YoloV4, DetectionLayer
 from load_weights import load_weights_v3, load_weights_v3_tiny, load_weights_v4
 
 NUM_CLASS = 80
@@ -47,10 +47,15 @@ def save_tflite():
     output = modelname + '.tflite'
     input_layer = tf.keras.layers.Input(
         batch_size=1,
-        shape=[IMAGE_SIZE, IMAGE_SIZE, 3],
-        dtype=tf.float32
+        shape=[IMAGE_SIZE, IMAGE_SIZE, 3]
     )
-    bbox_tensors = MODEL_CLASS[modelname](input_layer, NUM_CLASS)
+    feature_maps = MODEL_CLASS[modelname](input_layer, NUM_CLASS)
+    bbox_tensors = list()
+    for i, fm in enumerate(feature_maps):
+        bbox_tensor = DetectionLayer(
+            fm, nc=NUM_CLASS, channels=input_layer.shape[3]
+        )
+        bbox_tensors.append(bbox_tensor)
     model = tf.keras.Model(input_layer, bbox_tensors)
     WEIGHT_FUNC[modelname](model, FLAGS.weights)
     model.summary()
@@ -58,16 +63,10 @@ def save_tflite():
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     if FLAGS.mode == 'full':
         converter.target_spec.supported_ops = [
-            # tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
             tf.lite.OpsSet.TFLITE_BUILTINS,
             tf.lite.OpsSet.SELECT_TF_OPS
         ]
-        # converter.inference_input_type = tf.uint8
-        # converter.inference_type = tf.uint8
         converter.allow_custom_ops = True
-        # converter.quantized_input_stats = {
-        #     'inputs:0': (0., 255.)
-        # }
         converter.representative_dataset = representative_data_gen
     if tf.__version__ >= '2.2.0':
         converter.experimental_new_converter = False
