@@ -379,6 +379,8 @@ class Detector(object):
         # set paramters
         self.camera_width = width
         self.camera_height = height
+        self.scale_width = float(self.camera_width) / self.image_width
+        self.scale_height = float(self.camera_height) / self.image_height
         self.hflip = hflip
         self.vflip = vflip
         self.threshold = threshold
@@ -412,125 +414,162 @@ class Detector(object):
                 'prob': prob,
                 'bbox': (xmin, ymin, xmax, ymax),
             })
-        if len(frames) > 0:
-            print(frames)
         return frames
 
     @staticmethod
-    def sigmoid(x: np.array) -> np.array:
-        return 1. / (1. + np.exp(-x))
+    def bboxes_iou(boxes1: np.array, boxes2: np.array) -> np.array:
+        boxes1_area = (
+            boxes1[..., 2] - boxes1[..., 0]
+        ) * (
+            boxes1[..., 3] - boxes1[..., 1]
+        )
+        boxes2_area = (
+            boxes2[..., 2] - boxes2[..., 0]
+        ) * (
+            boxes2[..., 3] - boxes2[..., 1]
+        )
+        left_up = np.maximum(boxes1[..., :2], boxes2[..., :2])
+        right_down = np.minimum(boxes1[..., 2:], boxes2[..., 2:])
+        intersection = np.maximum(right_down - left_up, 0.0)
+        inter_area = intersection[..., 0] * intersection[..., 1]
+        union_area = boxes1_area + boxes2_area - inter_area
+        ious = np.maximum(
+            1.0 * inter_area / union_area,
+            np.finfo(np.float32).eps
+        )
+        return ious
 
     def get_frames_yolo(self: Detector, outputs: List) -> List:
         frames = list()
         if self.yolo_version == 'yolov3-tiny':
-            strides = [16, 32]
             anchors = [
                 [(10, 14), (23, 27), (37, 58)],
                 [(81, 82), (135, 169), (344, 319)],
             ]
-            xyscale = [1.0, 1.0]
+            xyscales = [1.0, 1.0]
         elif self.yolo_version == 'yolov3':
-            strides = [8, 16, 32]
             anchors = [
                 [(10, 13), (16, 30), (33, 23)],
                 [(30, 61), (62, 45), (59, 119)],
                 [(116, 90), (156, 198), (373, 326)],
             ]
-            xyscale = [1.0, 1.0, 1.0]
+            xyscales = [1.0, 1.0, 1.0]
         elif self.yolo_version == 'yolov4':
-            strides = [8, 16, 32]
             anchors = np.array([
                 [(12, 16), (19, 36), (40, 28)],
                 [(36, 75), (76, 55), (72, 146)],
                 [(142, 110), (192, 243), (459, 401)],
             ])
-            xyscale = [1.2, 1.1, 1.05]
+            xyscales = [1.2, 1.1, 1.05]
         else:
             raise NotImplementedError()
-        assert(len(outputs) == len(strides))
         pred_bbox = list()
         for i, pred in enumerate(outputs):
-            try:
-                pred_shape = pred.shape
-                pred_x = pred_shape[1]
-                pred_y = pred_shape[2]
-                raw_xy = pred[:, :, :, :, 0:2]
-                raw_wh = pred[:, :, :, :, 2:4]
-                others = pred[:, :, :, :, 4:]
-                xy_grid = np.meshgrid(np.arange(pred_x), np.arange(pred_y))
-                xy_grid = np.expand_dims(np.stack(xy_grid, axis=-1), axis=2)
-                xy_grid = np.tile(
-                    np.expand_dims(xy_grid, axis=0),
-                    [1, 1, 1, 3, 1]
-                )
-                xy_grid = xy_grid.astype(np.float)
-                pred_xy = ((
-                    self.sigmoid(raw_xy) * xyscale[i]
-                ) - 0.5 * (xyscale[i] - 1) + xy_grid) * strides[i]
-                pred_wh = (np.exp(raw_wh) * anchors[i])
-                pred_bbox.append(
-                    np.concatenate([pred_xy, pred_wh, others], axis=-1)
-                )
-            except Exception:
-                continue
+            pred_shape = pred.shape
+            pred_x = pred_shape[1]
+            pred_y = pred_shape[2]
+            strides = (self.image_width // pred_x, self.image_height // pred_y)
+            anchor = anchors[i]
+            xyscale = xyscales[i]
+            xy, wh, confprob = np.split(
+                pred, (2, 4), axis=-1
+            )
+            xy_offset = np.meshgrid(np.arange(pred_x), np.arange(pred_y))
+            xy_offset = np.expand_dims(np.stack(xy_offset, axis=-1), axis=2)
+            xy_offset = np.tile(
+                np.expand_dims(xy_offset, axis=0), [1, 1, 1, 3, 1]
+            ).astype(np.float)
+            xy = (
+                (xy * xyscale) - (0.5 * (xyscale - 1)) + xy_offset
+            ) * strides
+            wh = wh * anchor
+            pred_bbox.append(
+                np.concatenate([xy, wh, confprob], axis=-1)
+            )
         pred_bbox = [np.reshape(x, (-1, x.shape[-1])) for x in pred_bbox]
         pred_bbox = np.concatenate(pred_bbox, axis=0)
-        valid_scale = [0, np.inf]
-        pred_xywh = pred_bbox[:, 0:4]
-        pred_conf = pred_bbox[:, 4]
-        pred_prob = pred_bbox[:, 5:]
-        # (x, y, w, h) -> (xmin, ymin, xmax, ymax)
-        pred_coor = np.concatenate([
-            pred_xywh[:, :2] - pred_xywh[:, 2:] * 0.5,
-            pred_xywh[:, :2] + pred_xywh[:, 2:] * 0.5
+        # class_ids and scores
+        conf = np.expand_dims(pred_bbox[:, 4], -1)
+        prob = pred_bbox[:, 5:]
+        prob = conf * prob
+        class_ids = np.argmax(prob, axis=-1)
+        scores = np.max(prob, axis=-1)
+        # xywh -> (xmin, ymin, xmax, ymax)
+        xywh = pred_bbox[:, 0:4]
+        boxes = np.concatenate([
+            xywh[:, :2] - (xywh[:, 2:] * 0.5),
+            xywh[:, :2] + (xywh[:, 2:] * 0.5)
         ], axis=-1)
-        # (xmin, ymin, xmax, ymax) -> (xmin_org, ymin_org, xmax_org, ymax_org)
-        resize_ratio = min(
-            self.image_width / self.camera_width,
-            self.image_height / self.camera_height
-        )
-        dw = (self.image_width - resize_ratio * self.camera_width) / 2
-        dh = (self.image_height - resize_ratio * self.camera_height) / 2
-        pred_coor[:, 0::2] = 1.0 * (pred_coor[:, 0::2] - dw) / resize_ratio
-        pred_coor[:, 1::2] = 1.0 * (pred_coor[:, 1::2] - dh) / resize_ratio
-        # clip some boxes those are out of range
-        pred_coor = np.concatenate([
-            np.maximum(pred_coor[:, :2], [0, 0]),
-            np.minimum(pred_coor[:, 2:], [1, 1])
+        # clip boxes those are out of range
+        boxes = np.concatenate([
+            np.maximum(boxes[:, :2], [0, 0]),
+            np.minimum(boxes[:, 2:], [self.image_width, self.image_height])
         ], axis=-1)
         invalid_mask = np.logical_or(
-            (pred_coor[:, 0] > pred_coor[:, 2]),
-            (pred_coor[:, 1] > pred_coor[:, 3])
+            (boxes[:, 0] > boxes[:, 2]),
+            (boxes[:, 1] > boxes[:, 3])
         )
-        pred_coor[invalid_mask] = 0
-        # discard some invalid boxes
-        bboxes_scale = np.sqrt(np.multiply.reduce(
-                pred_coor[:, 2:4] - pred_coor[:, 0:2], axis=-1
+        boxes[invalid_mask] = 0
+        # discard invalid boxes
+        box_scales = np.sqrt(np.multiply.reduce(
+            boxes[:, 2:4] - boxes[:, 0:2], axis=-1
         ))
         scale_mask = np.logical_and(
-            (valid_scale[0] < bboxes_scale),
-            (bboxes_scale < valid_scale[1])
+            (0 < box_scales),
+            (box_scales < np.inf)
         )
-        # discard some boxes with low scores
-        classes = np.argmax(pred_prob, axis=-1)
-        scores = pred_conf * pred_prob[np.arange(len(pred_coor)), classes]
         score_mask = scores > self.threshold
         mask = np.logical_and(scale_mask, score_mask)
-        boxes = pred_coor[mask]
-        class_ids = classes[mask]
+        boxes = boxes[mask]
+        class_ids = class_ids[mask]
         scores = scores[mask]
-        assert(len(boxes.shape) == 2)
-        assert(len(class_ids.shape) == 1)
-        assert(len(scores.shape) == 1)
-        assert(boxes.shape[1] == 4)
-        assert(boxes.shape[0] == class_ids.shape[0])
-        assert(boxes.shape[0] == scores.shape[0])
-        print(class_ids)
-        if boxes.shape[0] == 0:
-            return frames
-        # utils.nms(bbox, 0,213, method='nms')
-        # utils.draw_bbox
-        return self.get_frames_ssd([boxes, class_ids, scores])
+        unique_class_ids = list(set(class_ids))
+        bboxes = np.concatenate([
+            boxes, class_ids[:, np.newaxis], scores[:, np.newaxis]
+        ], axis=-1)
+        best_bboxes = list()
+        for cls in unique_class_ids:
+            cls_mask = (bboxes[:, 4] == cls)
+            cls_bboxes = bboxes[cls_mask]
+            while len(cls_bboxes) > 0:
+                max_ind = np.argmax(cls_bboxes[:, 5])
+                best_bbox = cls_bboxes[max_ind]
+                best_bboxes.append(best_bbox)
+                cls_bboxes = np.concatenate(
+                    [cls_bboxes[:max_ind], cls_bboxes[max_ind + 1:]]
+                )
+                iou = self.bboxes_iou(
+                    np.array(best_bbox[np.newaxis, :4]),
+                    np.array(cls_bboxes[:, :4])
+                )
+                weight = np.ones((len(iou),), dtype=np.float32)
+                iou_mask = iou > 0.213
+                weight[iou_mask] = 0
+                cls_bboxes[:, 5] = cls_bboxes[:, 5] * weight
+                score_mask = cls_bboxes[:, 5] > 0
+                cls_bboxes = cls_bboxes[score_mask]
+        frames = list()
+        for bbox in best_bboxes:
+            cid = int(bbox[4])
+            prob = float(bbox[5])
+            name = self.id2label.get(cid)
+            if name is None:
+                continue
+            if self.target_id != -1 and self.target_id != cid:
+                continue
+            if prob < self.threshold:
+                continue
+            xmin, ymin, xmax, ymax = bbox[0:4]
+            xmin = max(0, int(xmin * self.scale_width))
+            xmax = min(self.camera_width, int(xmax * self.scale_width))
+            ymin = max(0, int(ymin * self.scale_height))
+            ymax = min(self.camera_height, int(ymax * self.scale_height))
+            frames.append({
+                'name': name,
+                'prob': prob,
+                'bbox': (xmin, ymin, xmax, ymax),
+            })
+        return frames
 
     def detect_objects(self: Detector, image: Image) -> List:
         # set input
@@ -539,7 +578,8 @@ class Detector(object):
             Image.ANTIALIAS
         )
         if self.is_yolo:
-            image = np.array(image, dtype=np.float32)[np.newaxis, ...]
+            image = np.array(image, dtype=np.float32) / 255.0
+            image = image[np.newaxis, ...]
         else:
             image = np.array(image, dtype=np.uint8)[np.newaxis, ...]
         self.interpreter.set_tensor(
