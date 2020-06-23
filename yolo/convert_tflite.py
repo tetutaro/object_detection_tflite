@@ -51,7 +51,7 @@ def save_tflite():
     feature_maps = MODEL_CLASS[modelname](input_layer, NUM_CLASS)
     model = tf.keras.Model(input_layer, feature_maps)
     WEIGHT_FUNC[modelname](model, FLAGS.weights)
-    model.summary()
+    # model.summary()
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     if FLAGS.mode == 'full':

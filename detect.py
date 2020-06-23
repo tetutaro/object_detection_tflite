@@ -194,33 +194,16 @@ class CvCamera(Camera):
         threshold: float,
         fontsize: int
     ) -> None:
+        self._camera = cv2.VideoCapture(0)
+        # adjust aspect ratio
+        self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+        self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+        height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         super().__init__(
             width=width, height=height,
             threshold=threshold, fontsize=fontsize
         )
-        self._camera = cv2.VideoCapture(0)
-        # adjust aspect ratio
-        video_width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        video_height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if video_width == width and video_height == height:
-            self.resize_frame = None
-            self.crop_frame = None
-        else:
-            width_scale = float(width) / video_width
-            height_scale = float(height) / video_height
-            scale = max(width_scale, height_scale)
-            resize_width = int(np.ceil(scale * video_width))
-            resize_height = int(np.ceil(scale * video_height))
-            if scale == 1.0:
-                self.resize_frame = None
-            else:
-                self.resize_frame = (resize_width, resize_height)
-            width_margin = int((resize_width - width) * 0.5)
-            height_margin = int((resize_height - height) * 0.5)
-            self.crop_frame = (
-                width_margin, width_margin + width,
-                height_margin, height_margin + height
-            )
         # set flipcode
         if hflip:
             if vflip:
@@ -245,11 +228,6 @@ class CvCamera(Camera):
             if image is None:
                 time.sleep(1)
                 continue
-            if self.resize_frame is not None:
-                image = cv2.resize(image, self.resize_frame)
-            if self.crop_frame is not None:
-                xmin, xmax, ymin, ymax = self.crop_frame
-                image = image[ymin:ymax, xmin:xmax]
             if self.flipcode is not None:
                 image = cv2.flip(image, self.flipcode)
             self.image = image
@@ -387,6 +365,36 @@ class Detector(object):
         self.fontsize = fontsize
         return
 
+    def reculc_size(self: Detector, size: Tuple[int]) -> None:
+        self.camera_width, self.camera_height = size
+        # camera2image
+        c2i_scale = min(
+            self.image_width / self.camera_width,
+            self.image_height / self.camera_height
+        )
+        self.c2i_size = (
+            int(self.camera_width * c2i_scale),
+            int(self.camera_height * c2i_scale)
+        )
+        self.c2i_offset = (
+            (self.image_width - self.c2i_size[0]) // 2,
+            (self.image_height - self.c2i_size[1]) // 2
+        )
+        # image2camera
+        self.i2c_scale = max(
+            self.camera_width / self.image_width,
+            self.camera_height / self.image_height
+        )
+        self.i2c_dummysize = (
+            int(self.image_width * self.i2c_scale),
+            int(self.image_height * self.i2c_scale)
+        )
+        self.i2c_offset = (
+            (self.i2c_dummysize[0] - self.camera_width) // 2,
+            (self.i2c_dummysize[1] - self.camera_height) // 2
+        )
+        return
+
     def get_frames_ssd(self: Detector, outputs: List) -> List:
         assert(len(outputs) == 4)
         boxes = outputs[0].squeeze()
@@ -405,15 +413,28 @@ class Detector(object):
             if prob < self.threshold:
                 continue
             ymin, xmin, ymax, xmax = boxes[i]
-            ymin = max(0, int(ymin * self.camera_height))
-            xmin = max(0, int(xmin * self.camera_width))
-            ymax = min(self.camera_height, int(ymax * self.camera_height))
-            xmax = min(self.camera_width, int(xmax * self.camera_width))
-            frames.append({
-                'name': name,
-                'prob': prob,
-                'bbox': (xmin, ymin, xmax, ymax),
-            })
+            xmin = max(
+                0,
+                int(xmin * self.i2c_dummysize[0]) - self.i2c_offset[0]
+            )
+            ymin = max(
+                0,
+                int(ymin * self.i2c_dummysize[1]) - self.i2c_offset[1]
+            )
+            xmax = min(
+                self.camera_width,
+                int(xmax * self.i2c_dummysize[0]) - self.i2c_offset[0]
+            )
+            ymax = min(
+                self.camera_height,
+                int(ymax * self.i2c_dummysize[1]) - self.i2c_offset[1]
+            )
+            if xmin < xmax and ymin < ymax:
+                frames.append({
+                    'name': name,
+                    'prob': prob,
+                    'bbox': (xmin, ymin, xmax, ymax),
+                })
         return frames
 
     @staticmethod
@@ -488,8 +509,8 @@ class Detector(object):
             ).astype(np.float)
             xy = ((
                 self.sigmoid(xy) * xyscale
-            ) - (0.5 * (xyscale - 1)) + xy_offset) * strides
-            wh = np.exp(wh) * anchor
+            ) - (0.5 * (xyscale - 1)) + xy_offset) * strides * self.i2c_scale
+            wh = np.exp(wh) * anchor * self.i2c_scale
             conf = self.sigmoid(conf)
             prob = self.sigmoid(prob)
             pred_bbox.append(
@@ -508,13 +529,13 @@ class Detector(object):
         # xywh -> (xmin, ymin, xmax, ymax)
         xywh = pred_bbox[:, 0:4]
         boxes = np.concatenate([
-            xywh[:, :2] - (xywh[:, 2:] * 0.5),
-            xywh[:, :2] + (xywh[:, 2:] * 0.5)
+            (xywh[:, :2] - (xywh[:, 2:] * 0.5)) - self.i2c_offset,
+            (xywh[:, :2] + (xywh[:, 2:] * 0.5)) - self.i2c_offset
         ], axis=-1)
         # clip boxes those are out of range
         boxes = np.concatenate([
             np.maximum(boxes[:, :2], [0, 0]),
-            np.minimum(boxes[:, 2:], [self.image_width, self.image_height])
+            np.minimum(boxes[:, 2:], [self.camera_width, self.camera_height])
         ], axis=-1)
         invalid_mask = np.logical_or(
             (boxes[:, 0] > boxes[:, 2]),
@@ -571,10 +592,10 @@ class Detector(object):
             if prob < self.threshold:
                 continue
             xmin, ymin, xmax, ymax = bbox[0:4]
-            xmin = max(0, int(xmin * self.scale_width))
-            xmax = min(self.camera_width, int(xmax * self.scale_width))
-            ymin = max(0, int(ymin * self.scale_height))
-            ymax = min(self.camera_height, int(ymax * self.scale_height))
+            xmin = max(0, int(xmin))
+            xmax = min(self.camera_width, int(xmax))
+            ymin = max(0, int(ymin))
+            ymax = min(self.camera_height, int(ymax))
             frames.append({
                 'name': name,
                 'prob': prob,
@@ -584,15 +605,16 @@ class Detector(object):
 
     def detect_objects(self: Detector, image: Image) -> List:
         # set input
-        image = image.resize(
-            (self.image_width, self.image_height),
-            Image.ANTIALIAS
+        image = image.resize(self.c2i_size, Image.ANTIALIAS)
+        background = Image.new(
+            "RGB", (self.image_width, self.image_height), (128, 128, 128)
         )
+        background.paste(image, self.c2i_offset)
         if self.is_yolo:
-            image = np.array(image, dtype=np.float32) / 255.0
+            image = np.array(background, dtype=np.float32) / 255.0
             image = image[np.newaxis, ...]
         else:
-            image = np.array(image, dtype=np.uint8)[np.newaxis, ...]
+            image = np.array(background, dtype=np.uint8)[np.newaxis, ...]
         self.interpreter.set_tensor(
             self.input_index, image
         )
@@ -615,6 +637,7 @@ class Detector(object):
             threshold=self.threshold,
             fontsize=self.fontsize
         )
+        self.reculc_size(camera._dims)
         camera.start()
         try:
             for image in camera.yield_image():
@@ -635,8 +658,8 @@ class Detector(object):
 
 
 @click.command()
-@click.option('--width', type=int, default=640)
-@click.option('--height', type=int, default=640)
+@click.option('--width', type=int, default=1280)
+@click.option('--height', type=int, default=720)
 @click.option('--hflip/--no-hflip', is_flag=True, default=DEFAULT_HFLIP)
 @click.option('--vflip/--no-vflip', is_flag=True, default=DEFAULT_VFLIP)
 @click.option('--tpu/--no-tpu', is_flag=True, default=False)
