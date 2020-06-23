@@ -4,12 +4,11 @@ import tensorflow as tf
 from absl import app, flags, logging
 from absl.flags import FLAGS
 import numpy as np
-import glob
-from yolo_models import YoloV3, YoloV3_tiny, YoloV4, DetectionLayer
+from yolo_models import YoloV3, YoloV3_tiny, YoloV4
 from load_weights import load_weights_v3, load_weights_v3_tiny, load_weights_v4
 
 NUM_CLASS = 80
-IMAGE_SIZE = 416
+IMAGE_SIZE = 320
 MODEL_CLASS = {
     'yolov3': YoloV3,
     'yolov3-tiny': YoloV3_tiny,
@@ -26,19 +25,19 @@ flags.DEFINE_string(
 flags.DEFINE_string(
     'mode', 'full', 'quantize mode (dynamic, full)'
 )
-NUM_TRAINING_IMAGES = 100
+NUM_TRAINING_IMAGES = 256
 
 
 def representative_data_gen():
-    files = glob.glob('coco/val2017/*.jpg')
-    for fname in files[:NUM_TRAINING_IMAGES]:
-        img = tf.image.decode_image(
-            open(fname, 'rb').read(), channels=3
+    for i in range(NUM_TRAINING_IMAGES):
+        img = np.random.randint(
+            0, NUM_TRAINING_IMAGES,
+            (IMAGE_SIZE, IMAGE_SIZE, 3)
         )
-        img = tf.image.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
-        img = tf.expand_dims(img, 0)
-        img = np.array(img, dtype=np.float32)
-        logging.info(fname)
+        img = np.expand_dims(img, 0)
+        img = np.array((img / 255.0), dtype=np.float32)
+        if i % 10 == 9:
+            logging.info("%d" % i)
         yield [img]
 
 
@@ -50,13 +49,7 @@ def save_tflite():
         shape=[IMAGE_SIZE, IMAGE_SIZE, 3]
     )
     feature_maps = MODEL_CLASS[modelname](input_layer, NUM_CLASS)
-    bbox_tensors = list()
-    for i, fm in enumerate(feature_maps):
-        bbox_tensor = DetectionLayer(
-            fm, nc=NUM_CLASS, channels=input_layer.shape[3]
-        )
-        bbox_tensors.append(bbox_tensor)
-    model = tf.keras.Model(input_layer, bbox_tensors)
+    model = tf.keras.Model(input_layer, feature_maps)
     WEIGHT_FUNC[modelname](model, FLAGS.weights)
     model.summary()
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -66,6 +59,8 @@ def save_tflite():
             tf.lite.OpsSet.TFLITE_BUILTINS,
             tf.lite.OpsSet.SELECT_TF_OPS
         ]
+        converter.inference_input_type = tf.uint8
+        converter.inference_output_type = tf.uint8
         converter.allow_custom_ops = True
         converter.representative_dataset = representative_data_gen
     if tf.__version__ >= '2.2.0':

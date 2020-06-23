@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
 from __future__ import annotations
-from typing import Tuple, List
+from typing import Tuple
 import tensorflow as tf
 from tensorflow.keras.layers import (
     BatchNormalization,
@@ -297,18 +297,3 @@ def YoloV4(input_layer: tf.Tensor, nc: int) -> tf.Tensor:
     x = DarknetConv(x, fil=1024, ksize=3)
     large_bbox = YoloLayer(x, nc=nc)
     return [small_bbox, middle_bbox, large_bbox]
-
-
-def DetectionLayer(
-    x: tf.Tensor,
-    nc: int,
-    channels: int = 3
-) -> List[tf.Tensor]:
-    shape = tf.shape(x)
-    output = tf.reshape(x, (*shape[:3], channels, nc + 5))
-    xy, wh, conf, prob = tf.split(output, (2, 2, 1, nc), axis=-1)
-    xy = tf.sigmoid(xy)
-    wh = tf.exp(wh)
-    conf = tf.sigmoid(conf)
-    prob = tf.sigmoid(prob)
-    return tf.concat([xy, wh, conf, prob], axis=-1)

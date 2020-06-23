@@ -316,7 +316,7 @@ class Detector(object):
             self.is_yolo = True
             self.yolo_version = os.path.splitext(
                 os.path.basename(model_path)
-            )[0]
+            )[0].split('_')[0]
         else:
             self.is_yolo = False
         if 'edgetpu' in model_path:
@@ -439,52 +439,61 @@ class Detector(object):
         )
         return ious
 
+    @staticmethod
+    def sigmoid(x: np.array) -> np.array:
+        return 1.0 / (1.0 + np.exp(-x))
+
     def get_frames_yolo(self: Detector, outputs: List) -> List:
         frames = list()
         if self.yolo_version == 'yolov3-tiny':
-            anchors = [
-                [(10, 14), (23, 27), (37, 58)],
-                [(81, 82), (135, 169), (344, 319)],
-            ]
-            xyscales = [1.0, 1.0]
+            stride_anchors = {
+                16: [(10, 14), (23, 27), (37, 58)],
+                32: [(81, 82), (135, 169), (344, 319)],
+            }
+            stride_xyscales = {16: 1.0, 32: 1.0}
         elif self.yolo_version == 'yolov3':
-            anchors = [
-                [(10, 13), (16, 30), (33, 23)],
-                [(30, 61), (62, 45), (59, 119)],
-                [(116, 90), (156, 198), (373, 326)],
-            ]
-            xyscales = [1.0, 1.0, 1.0]
+            stride_anchors = {
+                8: [(10, 13), (16, 30), (33, 23)],
+                16: [(30, 61), (62, 45), (59, 119)],
+                32: [(116, 90), (156, 198), (373, 326)],
+            }
+            stride_xyscales = {8: 1.0, 16: 1.0, 32: 1.0}
         elif self.yolo_version == 'yolov4':
-            anchors = np.array([
-                [(12, 16), (19, 36), (40, 28)],
-                [(36, 75), (76, 55), (72, 146)],
-                [(142, 110), (192, 243), (459, 401)],
-            ])
-            xyscales = [1.2, 1.1, 1.05]
+            stride_anchors = {
+                8: [(12, 16), (19, 36), (40, 28)],
+                16: [(36, 75), (76, 55), (72, 146)],
+                32: [(142, 110), (192, 243), (459, 401)],
+            }
+            stride_xyscales = {8: 1.05, 16: 1.1, 32: 1.2}
         else:
             raise NotImplementedError()
         pred_bbox = list()
         for i, pred in enumerate(outputs):
             pred_shape = pred.shape
-            pred_x = pred_shape[1]
-            pred_y = pred_shape[2]
+            pred_y = pred_shape[1]
+            pred_x = pred_shape[2]
             strides = (self.image_width // pred_x, self.image_height // pred_y)
-            anchor = anchors[i]
-            xyscale = xyscales[i]
-            xy, wh, confprob = np.split(
-                pred, (2, 4), axis=-1
+            stride = self.image_width // pred_x
+            anchor = stride_anchors[stride]
+            xyscale = stride_xyscales[stride]
+            nc = len(self.id2label)
+            pred = np.reshape(pred, (-1, pred_y, pred_x, 3, nc + 5))
+            xy, wh, conf, prob = np.split(
+                pred, (2, 4, 5), axis=-1
             )
             xy_offset = np.meshgrid(np.arange(pred_x), np.arange(pred_y))
             xy_offset = np.expand_dims(np.stack(xy_offset, axis=-1), axis=2)
             xy_offset = np.tile(
                 np.expand_dims(xy_offset, axis=0), [1, 1, 1, 3, 1]
             ).astype(np.float)
-            xy = (
-                (xy * xyscale) - (0.5 * (xyscale - 1)) + xy_offset
-            ) * strides
-            wh = wh * anchor
+            xy = ((
+                self.sigmoid(xy) * xyscale
+            ) - (0.5 * (xyscale - 1)) + xy_offset) * strides
+            wh = np.exp(wh) * anchor
+            conf = self.sigmoid(conf)
+            prob = self.sigmoid(prob)
             pred_bbox.append(
-                np.concatenate([xy, wh, confprob], axis=-1)
+                np.concatenate([xy, wh, conf, prob], axis=-1)
             )
         pred_bbox = [np.reshape(x, (-1, x.shape[-1])) for x in pred_bbox]
         pred_bbox = np.concatenate(pred_bbox, axis=0)
@@ -492,6 +501,8 @@ class Detector(object):
         conf = np.expand_dims(pred_bbox[:, 4], -1)
         prob = pred_bbox[:, 5:]
         prob = conf * prob
+        if self.yolo_version == 'yolov3-tiny':
+            prob = np.power(prob, 0.3)
         class_ids = np.argmax(prob, axis=-1)
         scores = np.max(prob, axis=-1)
         # xywh -> (xmin, ymin, xmax, ymax)
