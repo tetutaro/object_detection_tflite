@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from __future__ import annotations
-from typing import Tuple
+from typing import Tuple, Optional
 import os
 import time
 import click
@@ -30,6 +30,7 @@ def _round_buffer_dims(dims: Tuple[int, int]) -> Tuple[int, int]:
 class Detector(object):
     def __init__(
         self: Detector,
+        media: Optional[str],
         width: int,
         height: int,
         hflip: bool,
@@ -37,15 +38,22 @@ class Detector(object):
         model_path: str,
         target: str,
         threshold: float,
-        fontsize: int
+        fontsize: int,
+        fastforward: int
     ) -> None:
+        if fastforward > 1:
+            self.fastforward = fastforward
+        else:
+            self.fastforward = 1
         self.camera = get_camera(
+            media=media,
             width=width,
             height=height,
             hflip=hflip,
             vflip=vflip,
             threshold=threshold,
-            fontsize=fontsize
+            fontsize=fontsize,
+            fastforward=self.fastforward
         )
         width, height = self.camera._dims
         self.decoder = get_decoder(
@@ -60,17 +68,21 @@ class Detector(object):
     def run(self: Detector) -> None:
         self.camera.start()
         try:
+            framecount = 0
             for image in self.camera.yield_image():
-                start_time = time.perf_counter()
-                objects = self.decoder.detect_objects(image)
-                objects = self.decoder.get_bboxes(objects)
-                end_time = time.perf_counter()
-                elapsed_ms = (end_time - start_time) * 1000
-                self.camera.clear()
-                self.camera.draw_objects(objects)
-                self.camera.draw_time(elapsed_ms)
-                self.camera.draw_count(len(objects))
-                self.camera.update()
+                framecount += 1
+                if framecount >= self.fastforward:
+                    start_time = time.perf_counter()
+                    objects = self.decoder.detect_objects(image)
+                    objects = self.decoder.get_bboxes(objects)
+                    end_time = time.perf_counter()
+                    elapsed_ms = (end_time - start_time) * 1000
+                    self.camera.clear()
+                    self.camera.draw_objects(objects)
+                    self.camera.draw_time(elapsed_ms)
+                    self.camera.draw_count(len(objects))
+                    self.camera.update()
+                    framecount = 0
         except KeyboardInterrupt:
             pass
         finally:
@@ -79,6 +91,7 @@ class Detector(object):
 
 
 @click.command()
+@click.option('--media', type=str, default=None)
 @click.option('--width', type=int, default=1280)
 @click.option('--height', type=int, default=720)
 @click.option('--hflip/--no-hflip', is_flag=True, default=DEFAULT_HFLIP)
@@ -88,7 +101,9 @@ class Detector(object):
 @click.option('--target', type=str, default='all')
 @click.option('--threshold', type=float, default=0.5)
 @click.option('--fontsize', type=int, default=20)
+@click.option('--fastforward', type=int, default=1)
 def main(
+    media: Optional[str],
     width: int,
     height: int,
     hflip: bool,
@@ -97,7 +112,8 @@ def main(
     model: str,
     target: str,
     threshold: float,
-    fontsize: int
+    fontsize: int,
+    fastforward: int
 ) -> None:
     if model == 'yolov3':
         model_path = 'yolo/yolov3'
@@ -132,6 +148,7 @@ def main(
     assert(os.path.exists(model_path))
     width, height = _round_buffer_dims((width, height))
     detector = Detector(
+        media=media,
         width=width,
         height=height,
         hflip=hflip,
@@ -139,7 +156,8 @@ def main(
         model_path=model_path,
         target=target,
         threshold=threshold,
-        fontsize=fontsize
+        fontsize=fontsize,
+        fastforward=fastforward
     )
     detector.run()
     return

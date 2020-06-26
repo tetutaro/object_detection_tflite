@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 from __future__ import annotations
 from typing import List, Dict, Tuple, Generator, Optional
+import os
 import io
 import time
 from PIL import Image, ImageDraw, ImageFont
@@ -24,7 +25,8 @@ class Camera(object):
         width: int,
         height: int,
         threshold: float,
-        fontsize: int
+        fontsize: int,
+        fastforward: int = 1
     ) -> None:
         self._dims = (width, height)
         self._buffer = Image.new('RGBA', self._dims)
@@ -36,6 +38,7 @@ class Camera(object):
         )
         self._threshold = threshold
         self._fontsize = fontsize
+        self._fastforward = fastforward
         return
 
     def clear(self: Camera) -> None:
@@ -51,9 +54,11 @@ class Camera(object):
         return
 
     def draw_time(self: Camera, elapsed_ms: float) -> None:
+        text = 'Elapsed Time: %.1f[ms]' % elapsed_ms
+        if self._fastforward > 1:
+            text += ' (speed x%d)' % self._fastforward
         self._draw_text(
-            'Elapsed Time: %.1f[ms]' % elapsed_ms,
-            location=(5, 5), color=None
+            text, location=(5, 5), color=None
         )
         return
 
@@ -169,22 +174,28 @@ class PiCamera(Camera):
 class CvCamera(Camera):
     def __init__(
         self: CvCamera,
+        media: Optional[str],
         width: int,
         height: int,
         hflip: bool,
         vflip: bool,
         threshold: float,
-        fontsize: int
+        fontsize: int,
+        fastforward: int = 1
     ) -> None:
-        self._camera = cv2.VideoCapture(0)
+        if media is None:
+            self._camera = cv2.VideoCapture(0)
+            self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+            self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
+            fastforward = 1
+        else:
+            self._camera = cv2.VideoCapture(media)
         # adjust aspect ratio
-        self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
-        self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
         height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         super().__init__(
             width=width, height=height,
-            threshold=threshold, fontsize=fontsize
+            threshold=threshold, fontsize=fontsize, fastforward=fastforward
         )
         # set flipcode
         if hflip:
@@ -235,15 +246,76 @@ class CvCamera(Camera):
         return
 
 
+class PlCamera(Camera):
+    def __init__(
+        self: PlCamera,
+        media: Optional[str],
+        threshold: float,
+        fontsize: int
+    ) -> None:
+        self.image = Image.open(media)
+        width, height = self.image.size
+        super().__init__(
+            media=media, width=width, height=height,
+            threshold=threshold, fontsize=fontsize
+        )
+        return
+
+    def start(self: PlCamera) -> None:
+        self.window = 'Object Detection'
+        cv2.namedWindow(self.window, cv2.WINDOW_GUI_NORMAL)
+        cv2.resizeWindow(self.window, *self._dims)
+        return
+
+    def yield_image(self: PlCamera) -> Generator[Image, None]:
+        yield Image.fromarray(self.image.copy()[..., ::-1])
+        return
+
+    def update(self: PlCamera) -> None:
+        overlay = np.array(self._buffer, dtype=np.uint8)
+        overlay = cv2.cvtColor(overlay, cv2.COLOR_RGBA2BGRA)
+        image = cv2.addWeighted(
+            cv2.cvtColor(self.image, cv2.COLOR_BGR2BGRA), 0.5,
+            overlay, 0.5, 2.2
+        )
+        cv2.imshow(self.window, image)
+        key = cv2.waitKey(0)
+        if key == 99:
+            raise KeyboardInterrupt
+        return
+
+    def stop(self: PlCamera) -> None:
+        cv2.destroyAllWindows()
+        return
+
+
 def get_camera(
+    media: Optional[str],
     width: int,
     height: int,
     hflip: bool,
     vflip: bool,
     threshold: float,
-    fontsize: int
+    fontsize: int,
+    fastforward: int
 ) -> Camera:
-    if platform.system() == 'Linux':  # RaspberryPi
+    if media is not None:
+        if not os.path.exists(media):
+            raise ValueError('set existed file')
+        ext = os.path.splitext(media)[1]
+        if ext in ['jpg', 'png']:
+            camera = PlCamera(
+                media=media, threshold=threshold, fontsize=fontsize
+            )
+        else:
+            camera = CvCamera(
+                media=media,
+                width=width, height=height,
+                hflip=hflip, vflip=vflip,
+                threshold=threshold, fontsize=fontsize,
+                fastforward=fastforward
+            )
+    elif platform.system() == 'Linux':  # RaspberryPi
         camera = PiCamera(
             width=width, height=height,
             hflip=hflip, vflip=vflip,
@@ -251,6 +323,7 @@ def get_camera(
         )
     elif platform.system() == 'Darwin':  # MacOS
         camera = CvCamera(
+            media=media,
             width=width, height=height,
             hflip=hflip, vflip=vflip,
             threshold=threshold, fontsize=fontsize
