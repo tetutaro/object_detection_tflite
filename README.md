@@ -1,15 +1,20 @@
 # object_detection_tflite
 
-Object Detection using RaspberryPi Camera
+Object Detection using TensorFlow Lite models.
 
-## setup
+FEATURES:
+- Object detection for streaming video shot by (MacBook, RaspberryPi) Camera Module
+- Fast object detection using Google Coral Edge TPU
+- You can use YOLO V3 and YOLO V4
+- Object detection for pre-recorded videos and photos
+- Face detection and age,gender estimation
+
+## setup of object detection
 
 - (Optional: RaspberryPi) prepare RaspberryPi and RaspberryPi Camera Module
 - install Python 3.7
 - install TensorFlow 2.1.0
     - cf. https://www.tensorflow.org/install/pip
-- install tensorflow-addon
-    - `> pip3 install tensorflow-addons==0.9.1`
 - install TensorFlow lite runtime
     - cf. https://www.tensorflow.org/lite/guide/python
     - you can know your platform of RaspberryPi with `> uname -a`
@@ -32,20 +37,37 @@ Object Detection using RaspberryPi Camera
     - `> pip3 install -r requirements.txt`
 - download pretrained TFlite weights
     - `> ./download_models.sh`
-- If you want to use YOLO, see [YOLO](/tetutaro/object_dtection_tflite/blob/master/yolo/README.md)
+- If you want to use YOLO, see [Readme of YOLO](https://github.com/tetutaro/object_detection_tflite/blob/master/yolo/README.md)
+    - you can use YOLO V3 tiny, YOLO V3 and YOLO V4
 
-## detect object
+## object detection
 
-- `> python3 detect.py [--tpu/--no-tpu] [--model <model>] [--target <target>] [--threshold <threshold>] [--width <width>] [--height <height>] [--hflip/--no-hflip] [--vflip/--no-vflip]`
+- `> detect.py [OPTIONS]`
+- OPTIONS:
     - `--tpu/--no-tpu`: use (or don't use) TPU (default: `--no-tpu`)
-    - `--model <model>`: model to use (default: `coco`)
-        - `coco`: `models/mobilenet_ssd_v2_coco_quant_postpresss*.tflite`
+    - `--model <model>`: model to use (default: `ssd`)
+        - `ssd`: `models/mobilenet_ssd_v2_coco_quant_postpresss*.tflite`
         - `face`: `models/mobilenet_ssd_v2_face_quant_postpresss*.tflite`
+        - `yolov3-tiny`: `yolo/yolov3-tiny*.tflite`
+        - `yolov3`: `yolo/yolov3*.tflite`
+        - `yolov4`: `yolo/yolov4*.tflite`
     - `--target <target>`: what to detect (default: `all`)
         - `all`: all objects written in `models/coco_labels.txt`
         - you can indicate one object which is written in `models/coco_labels.txt` (cf. `bird`, `person`, ...)
     - `--threshold <threshold>`: threshold of probability which shown in otput (default: 0.5)
-    - `--width <width>`: width of captured image (default: 640)
-    - `--height <height>`: height of captured image (default: 640)
+    - `--width <width>`: width of captured image (default: 1280)
+    - `--height <height>`: height of captured image (default: 720)
     - `--hflip/--no-hflip`: flip image horizontally (default: True (RaspberryPi) False (MacOS))
     - `--vflip/--no-vflip`: flip image vertically (default: True (RaspberryPi) False (MacOS))
+    - `--fontsize <fontsize>`: fontsize of text written within the output image (default: 20)
+    - `--media <filename>`: pre-recorded video or photo (default: None)
+    - `--fastforward <skip>`: skip some frames (pre-recorded video only) (default: 1(no skip))
+
+## face detection and age, gender estimation
+
+- `> face_agender.py [OPTIONS]`
+- OPTIONS are the same as above (`model` and `target` are invalidated)
+
+## setup of agender model
+
+- see [Readme of Agender](https://github.com/tetutaro/object_detection_tflite/blob/master/agender/README.md)

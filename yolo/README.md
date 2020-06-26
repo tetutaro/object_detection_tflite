@@ -1,30 +1,40 @@
 # YOLO v3, YOLO v3 tiny, YOLO v4
 
 - YOLO v3
+    - site: https://pjreddie.com/darknet/yolo/
     - arXiv: https://arxiv.org/abs/1804.02767
     - https://github.com/pjreddie/darknet
 - YOLO v4
     - arXiv: https://arxiv.org/abs/2004.10934
     - https://github.com/AlexeyAB/darknet
-- The github repository I mostly reference
-    - https://github.com/hunglc007/tensorflow-yolov4-tflite
 
-Python codes in this folder is almost the same
-with the above hunglc007's repository.
-But the changing points are below.
-
-- set image size as 320
-- input_details and output_details are the same with [Google's SSD](https://github.com/google-coral/examples-camera)
-
-## create TFlite weights files (full integer quantization)
+## create TFlite weight files (dynamic quantization)
 
 - `> ./download_yolo.sh` (it will take too much time)
-- `> ./download_coco.sh` (it will take too much time)
-- `> python convert_tflite.py --weights yolov3.weights`
-- `> python convert_tflite.py --weights yolov3-tiny.weights`
-- `> python convert_tflite.py --weights yolov4.weights`
+- `> convert_tflite.py --weights yolov3-tiny.weights --mode dynamic`
+- `> convert_tflite.py --weights yolov3.weights --mode dynamic`
+- `> convert_tflite.py --weights yolov4.weights --mode dynamic`
 
-## create TFlite weights files for Edge TPU
+## YOLO models cannot be used with TPU
+
+- YOLO v3
+    - YOLO v3 uses LeakyReLU as the activate function.
+    - LeakyReLU cannot be fully quantized with TensorFlow 2.1
+    - TensorFlow nightly (tf\_nightly = TF 2.3?) can fully quantized LeakyReLU
+    - But the EdgeTPU compiler does not support TF nightly
+    - If the EdgeTPU compiler is updated further, it may be usable YOLO v3 in TPU
+- YOLO v4
+    - YOLO v4 uses LeakyReLU and Mish as the activate function
+    - I think it is difficult to fully quantize Mish
+        - because Mish uses exponential
+
+### (cf) create TFlite weight files (full integer quantization)
+
+- `> convert_tflite.py --weights yolov3.weights --mode full`
+- `> convert_tflite.py --weights yolov3-tiny.weights --mode full`
+- `> convert_tflite.py --weights yolov4.weights --mode full`
+
+### (cf) create TFlite weight files for Edge TPU
 
 - install docker on your PC
 - `> build_docker.sh`
