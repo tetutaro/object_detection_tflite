@@ -448,3 +448,65 @@ def get_decoder(
             model_path=model_path, target=target, threshold=threshold,
             width=width, height=height
         )
+
+
+class Predictor(Decoder):
+    def __init__(
+        self: Predictor,
+        model_path: str,
+    ) -> None:
+        # detect tpu
+        if 'edgetpu' in model_path:
+            self.is_tpu = True
+        else:
+            self.is_tpu = False
+        # load interpreter
+        self.load_interpreter(model_path=model_path)
+        return
+
+    def predict(self: Predictor, image: Image, objects: List) -> None:
+        pass
+
+
+class PredictorAgender(Predictor):
+    def predict(self: PredictorAgender, image: Image, faces: List) -> None:
+        for face in faces:
+            xmin, ymin, xmax, ymax = face['bbox']
+            faceimg = image.crop(
+                (xmin, ymin, xmax, ymax)
+            ).resize(
+                (64, 64), Image.ANTIALIAS
+            )
+            faceimg = np.array(faceimg, dtype=np.float32)[np.newaxis, ...]
+            self.interpreter.set_tensor(
+                self.input_index, faceimg
+            )
+            self.interpreter.invoke()
+            outputs = [
+                self.interpreter.get_tensor(
+                    i
+                ) for i in self.output_indexes
+            ]
+            for output in outputs:
+                output = np.squeeze(output)
+                if output.shape[0] == 2:
+                    # gender
+                    if output[0] < 0.5:
+                        gender = 'M'
+                    else:
+                        gender = 'F'
+                else:
+                    # age
+                    age = output.dot(np.arange(0, 101).reshape(101, 1))
+                    age = int(age[0])
+            face['name'] = "%s-%d" % (gender, age)
+        return
+
+
+def get_predictor(
+    model_path: str,
+) -> Predictor:
+    if 'agender' in model_path:
+        return PredictorAgender(model_path=model_path)
+    else:
+        raise NotImplementedError

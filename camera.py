@@ -8,13 +8,10 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 import matplotlib.cm as cm
 import numpy as np
+import cv2
 import platform
 if platform.system() == 'Linux':  # RaspberryPi
     import picamera
-elif platform.system() == 'Darwin':  # MacOS X
-    import cv2
-else:
-    raise NotImplementedError()
 
 FRAME_PER_SECOND = 30
 
