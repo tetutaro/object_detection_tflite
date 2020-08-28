@@ -56,15 +56,14 @@ def save_tflite():
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     if FLAGS.mode == 'full':
         converter.target_spec.supported_ops = [
-            tf.lite.OpsSet.TFLITE_BUILTINS,
+            tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
             tf.lite.OpsSet.SELECT_TF_OPS
         ]
+#        converter.target_spec.supported_types = [tf.int8]
         converter.inference_input_type = tf.uint8
         converter.inference_output_type = tf.uint8
-        converter.allow_custom_ops = True
+#        converter.allow_custom_ops = True
         converter.representative_dataset = representative_data_gen
-    if tf.__version__ >= '2.2.0':
-        converter.experimental_new_converter = False
     tflite_model = converter.convert()
     open(output, 'wb').write(tflite_model)
     logging.info("tflite model is saved at {}".format(output))

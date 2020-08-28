@@ -1,2 +1,2 @@
 #!/bin/sh
-docker build -t edgedpu_env .
+docker build -t edgetpu_env .
