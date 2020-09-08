@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 from __future__ import annotations
-from typing import List
+from typing import List, Optional
 import os
+import re
 import numpy as np
 from PIL import Image
+import cv2
 import tflite_runtime.interpreter as tflite
 import platform
 if platform.system() == 'Linux':  # RaspberryPi
@@ -13,6 +15,8 @@ elif platform.system() == 'Darwin':  # MacOS X
     EDGETPU_SHARED_LIB = 'libedgetpu.1.dylib'
 else:
     raise NotImplementedError()
+
+EXTRACT_PAREN = re.compile(r'(?<=\().+?(?=\))')
 
 
 def bboxes_iou(boxes1: np.array, boxes2: np.array) -> np.array:
@@ -453,7 +457,7 @@ def get_decoder(
 class Predictor(Decoder):
     def __init__(
         self: Predictor,
-        model_path: str,
+        model_path: str
     ) -> None:
         # detect tpu
         if 'edgetpu' in model_path:
@@ -503,10 +507,115 @@ class PredictorAgender(Predictor):
         return
 
 
+class PredictorMobileNet(Predictor):
+    def __init__(
+        self: PredictorMobileNet,
+        model_path: str,
+        target: Optional[str],
+        threshold: Optional[float]
+    ) -> None:
+        super().__init__(model_path=model_path)
+        self.id2label = dict()
+        self.label2id = dict()
+        self.load_labels(model_path=model_path)
+        self.target = target
+        if threshold is None:
+            self.threshold = 0.5
+        else:
+            self.threshold = threshold
+        return
+
+    def load_labels(self: PredictorMobileNet, model_path: str) -> None:
+        if 'bird' in model_path:
+            label_path = 'models/inat_bird_labels.txt'
+        elif 'insect' in model_path:
+            label_path = 'models/inat_insect_labels.txt'
+        elif 'plant' in model_path:
+            label_path = 'models/inat_plant_labels.txt'
+        else:
+            label_path = 'models/imagenet_labels.txt'
+        with open(label_path, 'rt') as rf:
+            line = rf.readline()
+            while line:
+                info = line.strip().split(' ', 1)
+                if len(info) != 2:
+                    line = rf.readline()
+                    continue
+                idx = int(info[0])
+                label = info[1].split(',')[0].strip().replace(' ', '_')
+                match = re.findall(EXTRACT_PAREN, label)
+                if len(match) > 0:
+                    label = match[0]
+                if label.endswith('_()'):
+                    label = label[:-3]
+                self.id2label[idx] = label
+                self.label2id[label] = idx
+                line = rf.readline()
+        return
+
+    def predict(self: PredictorMobileNet, image: Image, bboxes: List) -> List:
+        return self._predict(image=image, bboxes=bboxes, imagesize=224)
+
+    def _predict(self: PredictorMobileNet, image: Image, bboxes: List, imagesize: int) -> List:
+        objects = list()
+        for bbox in bboxes:
+            background = Image.new("RGB", (imagesize, imagesize), (128, 128, 128))
+            x, y, w, h = bbox
+            cropped = image.crop((x, y, x+w, y+h))
+            if w >= h:
+                adjust = int(imagesize * h / w)
+                cropped = cropped.resize((imagesize, adjust), Image.BICUBIC)
+                margin = (imagesize - adjust) // 2
+                background.paste(cropped, (0, margin))
+            else:
+                adjust = int(imagesize * w / h)
+                cropped = cropped.resize((adjust, imagesize), Image.BICUBIC)
+                margin = (imagesize - adjust) // 2
+                background.paste(cropped, (margin, 0))
+            data = np.array(background, dtype=np.uint8)[np.newaxis, ...]
+            self.interpreter.set_tensor(
+                self.input_index, data
+            )
+            self.interpreter.invoke()
+            outputs = [
+                self.interpreter.get_tensor(
+                    i
+                ) for i in self.output_indexes
+            ]
+            assert(len(outputs) == 1)
+            idx = np.argmax(outputs[0])
+            label = self.id2label[idx]
+            prob = outputs[0][0, idx] / np.sum(outputs)
+            if label != 'background' and prob >= self.threshold:
+                objects.append({
+                    'name': label,
+                    'prob': prob,
+                    'bbox': (x, y, x + w, y + h),
+                })
+        return objects
+
+
+class PredictorInception(PredictorMobileNet):
+    def predict(self: PredictorInception, image: Image, bboxes: List) -> List:
+        return self._predict(image=image, bboxes=bboxes, imagesize=299)
+
+
 def get_predictor(
     model_path: str,
+    target: Optional[str] = None,
+    threshold: Optional[float] = None
 ) -> Predictor:
     if 'agender' in model_path:
         return PredictorAgender(model_path=model_path)
+    if 'inception' in model_path:
+        return PredictorInception(
+            model_path=model_path,
+            target=target,
+            threshold=threshold
+        )
     else:
-        raise NotImplementedError
+        return PredictorMobileNet(
+            model_path=model_path,
+            target=target,
+            threshold=threshold
+        )

@@ -71,3 +71,13 @@ FEATURES:
 ## setup of agender model
 
 - see [Readme of Agender](https://github.com/tetutaro/object_detection_tflite/blob/master/agender/README.md)
+
+## motion detection and object detection
+
+- `> motion_detect.py [OPTIONS]`
+- OPTIONS are the same as above (`model` and `target` are invalidated)
+- models are...
+    - `mobilenet`: `models/mobilenet_v2_1.0_224_quant*.tflite`
+    - `bird`: `models/mobilenet_v2_1.0_224_inat_bird_quant*.tflite`
+    - `insect`: `models/mobilenet_v2_1.0_224_inat_insect_quant*.tflite`
+    - `plant`: `models/mobilenet_v2_1.0_224_inat_plant_quant*.tflite`
