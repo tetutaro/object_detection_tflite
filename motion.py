@@ -6,7 +6,12 @@ from PIL import Image
 import cv2
 import numpy as np
 
+# the weighted average weight of current and past frames
 WEIGHT_ACCUMULATE = 0.7
+# the threshold for detecting dot movement
+DOT_THRESHOLD = 5
+# the minimun area of contour
+MIN_CONTOUR_AREA = 4000
 
 
 class Motion(object):
@@ -29,7 +34,7 @@ class Motion(object):
             cv2.convertScaleAbs(curr),
             cv2.convertScaleAbs(base)
         )
-        thresh = cv2.threshold(diff, 3, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.threshold(diff, DOT_THRESHOLD, 255, cv2.THRESH_BINARY)[1]
         # findCounters() returns...
         # contours, hierarchy (Open CV 2) (imutils.is_cv2() is True)
         # image, contours, hierarchy (Open CV 3) (imutils.is_cv3() is True)
@@ -40,7 +45,7 @@ class Motion(object):
         bboxes = list()
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 4000:
+            if area < MIN_CONTOUR_AREA:
                 continue
             x, y, w, h = cv2.boundingRect(cnt)
             bboxes.append((x, y, w, h))
