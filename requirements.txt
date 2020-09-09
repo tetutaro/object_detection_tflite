@@ -2,7 +2,4 @@ click
 numpy
 Pillow
 matplotlib
-opencv-python
-#tensorflow==2.1.0
-#tensorflow-addons==0.9.1
-#picamera
+opencv-contrib-python
