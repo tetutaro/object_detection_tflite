@@ -1,5 +1,7 @@
-click
-numpy
-Pillow
-matplotlib
 opencv-contrib-python
+tensorflow
+tensorflow-addons
+Pillow
+numpy
+matplotlib
+click

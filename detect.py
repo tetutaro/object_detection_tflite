@@ -96,8 +96,8 @@ class Detector(object):
 @click.option('--height', type=int, default=720)
 @click.option('--hflip/--no-hflip', is_flag=True, default=DEFAULT_HFLIP)
 @click.option('--vflip/--no-vflip', is_flag=True, default=DEFAULT_VFLIP)
-@click.option('--tpu/--no-tpu', is_flag=True, default=False)
 @click.option('--model', type=str, default='coco')
+@click.option('--quant', type=str, default='fp32')
 @click.option('--target', type=str, default='all')
 @click.option('--threshold', type=float, default=0.5)
 @click.option('--fontsize', type=int, default=20)
@@ -108,43 +108,38 @@ def main(
     height: int,
     hflip: bool,
     vflip: bool,
-    tpu: bool,
     model: str,
+    quant: str,
     target: str,
     threshold: float,
     fontsize: int,
     fastforward: int
 ) -> None:
-    if model == 'yolov3':
-        model_path = 'yolo/yolov3'
-        if tpu:
-            model_path += '_edgetpu.tflite'
+    if model in ['yolov3-tiny', 'yolov3', 'yolov4']:
+        model_base = f'yolo/{model}'
+        if quant in ['fp16', 'int8']:
+            model_quant = '_' + quant
+        elif quant == 'tpu':
+            model_quant = '_int8_edgetpu'
         else:
-            model_path += '.tflite'
-    elif model == 'yolov3-tiny':
-        model_path = 'yolo/yolov3-tiny'
-        if tpu:
-            model_path += '_edgetpu.tflite'
-        else:
-            model_path += '.tflite'
-    elif model == 'yolov4':
-        model_path = 'yolo/yolov4'
-        if tpu:
-            model_path += '_edgetpu.tflite'
-        else:
-            model_path += '.tflite'
+            model_quant = '_fp32'
+        model_path = f'{model_base}{model_quant}.tflite'
+        if model == 'yolov4' and quant == 'tpu':
+            raise SystemError('YOLO V4 cannot compile for EdgeTPU')
     elif model == 'face':
-        model_path = 'models/mobilenet_ssd_v2_'
-        if tpu:
-            model_path += 'face_quant_postprocess_edgetpu.tflite'
+        model_base = 'models/mobilenet_ssd_v2_face_quant_postprocess'
+        if quant == 'tpu':
+            model_quant = '_edgetpu'
         else:
-            model_path += 'face_quant_postprocess.tflite'
+            model_quant = ''
+        model_path = f'{model_base}{model_quant}.tflite'
     else:
-        model_path = 'models/mobilenet_ssd_v2_'
-        if tpu:
-            model_path += 'coco_quant_postprocess_edgetpu.tflite'
+        model_base = 'models/mobilenet_ssd_v2_coco_quant_postprocess'
+        if quant == 'tpu':
+            model_quant = '_edgetpu'
         else:
-            model_path += 'coco_quant_postprocess.tflite'
+            model_quant = ''
+        model_path = f'{model_base}{model_quant}.tflite'
     assert(os.path.exists(model_path))
     width, height = _round_buffer_dims((width, height))
     detector = Detector(

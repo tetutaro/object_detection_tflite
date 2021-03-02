@@ -85,7 +85,8 @@ class Decoder(object):
         target: str,
         threshold: float,
         width: int,
-        height: int
+        height: int,
+        use_int8: bool
     ) -> None:
         # detect tpu
         if 'edgetpu' in model_path:
@@ -111,6 +112,7 @@ class Decoder(object):
         self.calc_scales(camera_width=width, camera_height=height)
         # others
         self.threshold = threshold
+        self.use_int8 = use_int8
         return
 
     def load_labels(self: Decoder) -> None:
@@ -140,6 +142,10 @@ class Decoder(object):
         output_details = self.interpreter.get_output_details()
         self.output_indexes = [
             output_details[i]['index'] for i in range(len(output_details))
+        ]
+        self.output_quant_params = [
+            output_details[i]['quantization_parameters']
+            for i in range(len(output_details))
         ]
         return
 
@@ -192,11 +198,12 @@ class DecoderSSD(Decoder):
         target: str,
         threshold: float,
         width: int,
-        height: int
+        height: int,
+        use_int8: bool
     ) -> None:
         super().__init__(
             model_path=model_path, target=target, threshold=threshold,
-            width=width, height=height
+            width=width, height=height, use_int8=use_int8
         )
         return
 
@@ -281,11 +288,12 @@ class DecoderYOLO(Decoder):
         target: str,
         threshold: float,
         width: int,
-        height: int
+        height: int,
+        use_int8: int
     ) -> None:
         super().__init__(
             model_path=model_path, target=target, threshold=threshold,
-            width=width, height=height
+            width=width, height=height, use_int8=use_int8
         )
         self.version = os.path.splitext(
             os.path.basename(model_path)
@@ -312,7 +320,12 @@ class DecoderYOLO(Decoder):
             "RGB", (self.image_width, self.image_height), (128, 128, 128)
         )
         background.paste(image, self.c2i_offset)
-        image = np.array(background, dtype=np.float32) / 255.0
+        if self.use_int8:
+            image = np.array(background, dtype=np.uint8)
+        else:
+            image = (
+                np.array(background, dtype=np.float32) / 255.0
+            ).astype(np.float32)
         image = image[np.newaxis, ...]
         self.interpreter.set_tensor(
             self.input_index, image
@@ -320,9 +333,21 @@ class DecoderYOLO(Decoder):
         # invoke
         self.interpreter.invoke()
         # get outputs
-        outputs = [
-            self.interpreter.get_tensor(i) for i in self.output_indexes
-        ]
+        if self.use_int8:
+            outputs = list()
+            for index, params in zip(
+                self.output_indexes, self.output_quant_params
+            ):
+                raw = self.interpreter.get_tensor(index)
+                output = (
+                    raw.astype(np.float32) - params['zero_points']
+                ) * params['scales']
+                outputs.append(output)
+        else:
+            outputs = [
+                self.interpreter.get_tensor(i)
+                for i in self.output_indexes
+            ]
         return outputs
 
     def get_bboxes(
@@ -453,15 +478,16 @@ def get_decoder(
     width: int,
     height: int
 ) -> Decoder:
+    use_int8 = 'int8' in model_path
     if 'yolo' in model_path:
         return DecoderYOLO(
             model_path=model_path, target=target, threshold=threshold,
-            width=width, height=height
+            width=width, height=height, use_int8=use_int8
         )
     else:
         return DecoderSSD(
             model_path=model_path, target=target, threshold=threshold,
-            width=width, height=height
+            width=width, height=height, use_int8=use_int8
         )
 
 
