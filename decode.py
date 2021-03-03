@@ -19,14 +19,18 @@ EXTRACT_PAREN = re.compile(r'(?<=\().+?(?=\))')
 
 
 # Intersection of Union
-# boxesX is numpy array of
-# offset 0: min x of bounding box
-# offset 1: min y of bounding box
-# offset 2: max x (x + width) of bounding box
-# offset 3: max y (y + height) of bounding box
-def bboxes_iou(boxes1: np.array, boxes2: np.array) -> np.array:
-    boxes1_area = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
-    boxes2_area = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+# boxesX is numpy array of xyxy
+def bboxes_iou(boxes1: np.ndarray, boxes2: np.ndarray) -> np.ndarray:
+    boxes1_area = (
+        boxes1[:, 2] - boxes1[:, 0]
+    ) * (
+        boxes1[:, 3] - boxes1[:, 1]
+    )
+    boxes2_area = (
+        boxes2[:, 2] - boxes2[:, 0]
+    ) * (
+        boxes2[:, 3] - boxes2[:, 1]
+    )
     left_up = np.maximum(boxes1[:, :2], boxes2[:, :2])
     right_down = np.minimum(boxes1[:, 2:], boxes2[:, 2:])
     intersection = np.maximum(right_down - left_up, 0.0)
@@ -42,13 +46,10 @@ def bboxes_iou(boxes1: np.array, boxes2: np.array) -> np.array:
 # Non-Maximum Supression
 # https://towardsdatascience.com/non-maximum-suppression-nms-93ce178e177c
 # bboxes is numpy array of
-# offset 0: min x of bounding box
-# offset 1: min y of bounding box
-# offset 2: max x (x + width) of bounding box
-# offset 3: max y (y + height) of bounding box
-# offset 4: class ID (int)
-# offset 5: probability
-def non_maximum_supression(bboxes: np.array) -> List:
+# offset 0-3: xyxy
+# offset 4: class id (int)
+# offset 5: confidence
+def non_maximum_supression(bboxes: np.ndarray) -> List:
     unique_class_ids = list(set(bboxes[:, 4]))
     best_bboxes = list()
     for cls in unique_class_ids:
@@ -74,7 +75,7 @@ def non_maximum_supression(bboxes: np.array) -> List:
     return best_bboxes
 
 
-def sigmoid(x: np.array) -> np.array:
+def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
 
 
@@ -113,6 +114,7 @@ class Decoder(object):
         # others
         self.threshold = threshold
         self.use_int8 = use_int8
+        self.model_path = model_path
         return
 
     def load_labels(self: Decoder) -> None:
@@ -240,44 +242,59 @@ class DecoderSSD(Decoder):
 
     def get_bboxes(self: DecoderSSD, outputs: List) -> List:
         assert(len(outputs) == 4)
-        raw_boxes = outputs[0].squeeze()
-        class_ids = outputs[1].squeeze()
-        scores = outputs[2].squeeze()
-        count = int(outputs[3].squeeze())
+        # 0-3: yxyx
+        # 4: class id
+        # 5: confidence
+        pred = np.squeeze(np.concatenate((
+            outputs[0],
+            outputs[1][..., np.newaxis],
+            outputs[2][..., np.newaxis]
+        ), axis=-1), 0).copy()
+        count = int(outputs[3][0])
+        if count < 20:
+            pred = pred[:count, :]
+        keep = pred[:, 5] >= self.threshold
+        if keep.sum() == 0:
+            return []
+        pred = pred[keep]
+        if self.target_id != -1:
+            keep = pred[:, 4] == self.target_id
+            if keep.sum() == 0:
+                return []
+            pred = pred[keep]
+        # adjust to original image size
+        pred[:, 0] = np.maximum(
+            (pred[:, 0] * self.i2c_dummysize[1]) - self.i2c_offset[1],
+            0
+        )
+        pred[:, 1] = np.maximum(
+            (pred[:, 1] * self.i2c_dummysize[0]) - self.i2c_offset[0],
+            0
+        )
+        pred[:, 2] = np.minimum(
+            (pred[:, 2] * self.i2c_dummysize[1]) - self.i2c_offset[1],
+            self.camera_height
+        )
+        pred[:, 3] = np.minimum(
+            (pred[:, 3] * self.i2c_dummysize[0]) - self.i2c_offset[0],
+            self.camera_width
+        )
         bboxes = list()
-        for i in range(count):
-            cid = int(class_ids[i])
-            prob = float(scores[i])
+        for info in pred.tolist():
+            ymin = int(info[0])
+            xmin = int(info[1])
+            ymax = int(info[2])
+            xmax = int(info[3])
+            cid = int(info[4])
+            prob = float(info[5])
             name = self.id2label.get(cid)
             if name is None:
                 continue
-            if self.target_id != -1 and self.target_id != cid:
-                continue
-            if prob < self.threshold:
-                continue
-            ymin, xmin, ymax, xmax = raw_boxes[i]
-            xmin = max(
-                0,
-                int(xmin * self.i2c_dummysize[0]) - self.i2c_offset[0]
-            )
-            ymin = max(
-                0,
-                int(ymin * self.i2c_dummysize[1]) - self.i2c_offset[1]
-            )
-            xmax = min(
-                self.camera_width,
-                int(xmax * self.i2c_dummysize[0]) - self.i2c_offset[0]
-            )
-            ymax = min(
-                self.camera_height,
-                int(ymax * self.i2c_dummysize[1]) - self.i2c_offset[1]
-            )
-            if xmin < xmax and ymin < ymax:
-                bboxes.append({
-                    'name': name,
-                    'prob': prob,
-                    'bbox': (xmin, ymin, xmax, ymax),
-                })
+            bboxes.append({
+                'name': name,
+                'prob': prob,
+                'bbox': (xmin, ymin, xmax, ymax),
+            })
         return bboxes
 
 
@@ -347,13 +364,14 @@ class DecoderYOLO(Decoder):
             outputs = [
                 self.interpreter.get_tensor(i)
                 for i in self.output_indexes
-            ]
+            ]  # List of np.array
         return outputs
 
-    def get_bboxes(
+    # preprocessing YOLO V3/V4 output for NMS
+    def preprocess_nms_v3_v4(
         self: DecoderYOLO,
-        outputs: List
-    ) -> List:
+        outputs: List[np.ndarray]
+    ) -> np.ndarray:
         if self.version == 'yolov3-tiny':
             stride_anchors = {
                 16: [(10, 14), (23, 27), (37, 58)],
@@ -446,9 +464,64 @@ class DecoderYOLO(Decoder):
         bboxes = np.concatenate([
             boxes, class_ids[:, np.newaxis], scores[:, np.newaxis]
         ], axis=-1)
-        best_bboxes = non_maximum_supression(bboxes=bboxes)
+        return bboxes
+
+    # preprocessing YOLO V5 output for NMS
+    # offset 0-3: xywh
+    # offset 4: object confidence (confidence of object(bbox) itself)
+    # offset 5-: class confidence (confidence of object being each class)
+    def preprocess_nms_v5(
+        self: DecoderYOLO,
+        outputs: List[np.ndarray]
+    ) -> np.ndarray:
+        assert len(outputs) == 1
+        # nbatch must be 1
+        pred = np.squeeze(outputs[0], 0).copy()
+        xywh = pred[:, :4]
+        xyxy = np.concatenate([
+            (xywh[:, :2] - (xywh[:, 2:] * 0.5)),
+            (xywh[:, :2] + (xywh[:, 2:] * 0.5))
+        ], axis=-1)
+        # adjust to original image size
+        xyxy[:, 0] = np.maximum(
+            (xyxy[:, 0] * self.i2c_dummysize[0]) - self.i2c_offset[0],
+            0
+        )
+        xyxy[:, 1] = np.maximum(
+            (xyxy[:, 1] * self.i2c_dummysize[1]) - self.i2c_offset[1],
+            0
+        )
+        xyxy[:, 2] = np.minimum(
+            (xyxy[:, 2] * self.i2c_dummysize[0]) - self.i2c_offset[0],
+            self.camera_width
+        )
+        xyxy[:, 3] = np.minimum(
+            (xyxy[:, 3] * self.i2c_dummysize[1]) - self.i2c_offset[1],
+            self.camera_height
+        )
+        # class confidence and object confidence
+        oconf = pred[:, 4:5]
+        cconf = pred[:, 5:]
+        # class conf should be multiplied by object conf
+        cconf *= oconf
+        # class ids
+        cls = cconf.argmax(axis=1)[:, np.newaxis].astype(np.float)
+        # confidence of bouding box
+        conf = cconf.max(axis=1)[:, np.newaxis]
+        # ready for NMS (0-3: xyxy, 4: class id, 5: confidence)
+        pred = np.concatenate((xyxy, cls, conf), axis=1)
+        # filter by confidence threshold
+        keep = pred[:, 5] >= self.threshold
+        pred = pred[keep]
+        pred = pred[np.argsort(pred[:, 4])[::-1]]
+        return pred
+
+    def postprecoss_nms(
+        self: DecoderYOLO,
+        pred: List
+    ) -> List:
         bboxes = list()
-        for bbox in best_bboxes:
+        for bbox in pred:
             cid = int(bbox[4])
             prob = float(bbox[5])
             name = self.id2label.get(cid)
@@ -468,6 +541,18 @@ class DecoderYOLO(Decoder):
                 'prob': prob,
                 'bbox': (xmin, ymin, xmax, ymax),
             })
+        return bboxes
+
+    def get_bboxes(
+        self: DecoderYOLO,
+        outputs: List[np.ndarray]
+    ) -> List:
+        if 'yolov5' in self.model_path:
+            bboxes = self.preprocess_nms_v5(outputs=outputs)
+        else:
+            bboxes = self.preprocess_nms_v3_v4(outputs=outputs)
+        bboxes = non_maximum_supression(bboxes=bboxes)
+        bboxes = self.postprecoss_nms(pred=bboxes)
         return bboxes
 
 

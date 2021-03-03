@@ -1,7 +1,9 @@
 opencv-contrib-python
 tensorflow
 tensorflow-addons
+torch
 Pillow
 numpy
 matplotlib
+PyYAML
 click

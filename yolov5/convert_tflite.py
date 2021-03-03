@@ -1,84 +1,80 @@
 #!/usr/bin/env python
 # -*- coding:utf-8 -*-
-from typing import List
-import tensorflow as tf
+from __future__ import annotations
+from typing import List, Dict
 import os
 import time
-import numpy as np
+import argparse
+import yaml
 import glob
 import cv2
-from yolo_models import YoloV3, YoloV3_tiny, YoloV4
+import numpy as np
+# Torch
+import torch
+# TensorFlow
+import tensorflow as tf
+from tensorflow.python.framework.convert_to_constants import (
+    convert_variables_to_constants_v2
+)
+# YOLO V5
+from yolov5_models import tf_Model, tf_Detect
 
-NUM_CLASS = 80
-IMAGE_SIZE = 320
 NUM_TRAINING_IMAGES = 100
-MODEL_CLASS = {
-    'yolov3-tiny': YoloV3_tiny,
-    'yolov3': YoloV3,
-    'yolov4': YoloV4,
-}
-MODEL_SHAPE = {
-    'yolov3-tiny': {
-        'nlayers': 13,
-        'nobn_layers': [9, 12],
-    },
-    'yolov3': {
-        'nlayers': 75,
-        'nobn_layers': [58, 66, 74],
-    },
-    'yolov4': {
-        'nlayers': 110,
-        'nobn_layers': [93, 101, 109],
-    },
-}
+IMAGE_SIZE = 640
 
 
-def load_darknet_weights(model: str, model_keras: tf.keras.Model) -> None:
-    wf = open(f'{model}.weights', 'rb')
-    major, minor, revision, seen, _ = np.fromfile(
-        wf, dtype=np.int32, count=5
+def convert_tf_keras_model(
+    model: str,
+    imgsize: List[int],
+    model_torch: torch.nn.Module,
+    nclasses: int,
+    config: Dict
+) -> tf.keras.Model:
+    model_tf = tf_Model(
+        model_torch=model_torch,
+        nclasses=nclasses,
+        config=config
     )
-    nlayers = MODEL_SHAPE[model]['nlayers']
-    nobn_layers = MODEL_SHAPE[model]['nobn_layers']
-    j = 0
-    assert len(model_keras.weighted_layers) == nlayers
-    for i, layers in enumerate(model_keras.weighted_layers):
-        conv_layer = layers.conv
-        norm_layer = layers.norm
-        input_shape = layers.input_shape
-        filters = conv_layer.filters
-        k_size = conv_layer.kernel_size[0]
-        in_dim = input_shape[-1]
-        if i not in nobn_layers:
-            # darknet weights: [beta, gamma, mean, variance]
-            bn_weights = np.fromfile(
-                wf, dtype=np.float32, count=(4 * filters)
-            )
-            # tf weights: [gamma, beta, mean, variance]
-            bn_weights = bn_weights.reshape((4, filters))[[1, 0, 2, 3]]
-            j += 1
-        else:
-            conv_bias = np.fromfile(
-                wf, dtype=np.float32, count=filters
-            )
-        # darknet shape (out_dim, in_dim, height, width)
-        conv_shape = (filters, in_dim, k_size, k_size)
-        conv_weights = np.fromfile(
-            wf, dtype=np.float32, count=np.product(conv_shape)
+    dummy_image_tf = tf.zeros((1, *imgsize, 3))  # NHWC
+    m = model_tf.model.layers[-1]
+    assert isinstance(m, tf_Detect), "the last layer must be Detect"
+    m.training = False
+    _ = model_tf.predict(dummy_image_tf)
+    # create keras model
+    inputs_keras = tf.keras.Input(
+        shape=(*imgsize, 3),
+        batch_size=1
+    )
+    outputs_keras = model_tf.predict(inputs=inputs_keras)
+    model_keras = tf.keras.Model(
+        inputs=inputs_keras,
+        outputs=outputs_keras,
+        name=model
+    )
+    # model_keras.summary()
+    return model_keras
+
+
+def export_tf_graphdef(model: str, model_keras: tf.keras.Model) -> None:
+    # https://github.com/leimao/Frozen_Graph_TensorFlow
+    graphdef_path = f'{model}.pb'
+    if os.path.isfile(graphdef_path):
+        return
+    full_model = tf.function(lambda x: model_keras(x))
+    full_model = full_model.get_concrete_function(
+        tf.TensorSpec(
+            model_keras.inputs[0].shape,
+            model_keras.inputs[0].dtype
         )
-        # tf shape (height, width, in_dim, out_dim)
-        conv_weights = conv_weights.reshape(conv_shape).transpose(
-            [2, 3, 1, 0]
-        )
-        if i not in nobn_layers:
-            assert norm_layer.__class__.__name__ == 'BatchNormalization'
-            conv_layer.set_weights([conv_weights])
-            norm_layer.set_weights(bn_weights)
-        else:
-            assert norm_layer.__class__.__name__ == 'function'
-            conv_layer.set_weights([conv_weights, conv_bias])
-    assert len(wf.read()) == 0, 'failed to read all data'
-    wf.close()
+    )
+    frozen_func = convert_variables_to_constants_v2(full_model)
+    frozen_func.graph.as_graph_def()
+    tf.io.write_graph(
+        graph_or_graph_def=frozen_func.graph,
+        logdir='.',
+        name=graphdef_path,
+        as_text=False
+    )
     return
 
 
@@ -112,7 +108,11 @@ def export_tflite_fp16(model: str, model_keras: tf.keras.Model) -> None:
     return
 
 
-def export_tflite_int8(model: str, model_keras: tf.keras.Model) -> None:
+def export_tflite_int8(
+    model: str,
+    imgsize: List[int],
+    model_keras: tf.keras.Model
+) -> None:
     path_tflite = f'{model}_int8.tflite'
     if os.path.isfile(path_tflite):
         return
@@ -125,7 +125,7 @@ def export_tflite_int8(model: str, model_keras: tf.keras.Model) -> None:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             ih = img.shape[0]
             iw = img.shape[1]
-            scale = min(IMAGE_SIZE / ih, IMAGE_SIZE / iw)
+            scale = min(imgsize[0] / ih, imgsize[1] / iw)
             nh = int(ih * scale)
             nw = int(iw * scale)
             oh = (IMAGE_SIZE - nh) // 2
@@ -138,9 +138,7 @@ def export_tflite_int8(model: str, model_keras: tf.keras.Model) -> None:
                 img.copy(), (nw, nh),
                 interpolation=interpolation
             )
-            rimg = np.full(
-                (IMAGE_SIZE, IMAGE_SIZE, 3), 128, dtype=np.uint8
-            )
+            rimg = np.full((*imgsize, 3), 128, dtype=np.uint8)
             rimg[oh:oh + nh, ow:ow + nw, :] = nimg
             rimg = rimg[np.newaxis, ...].astype(np.float32)
             rimg /= 255.0
@@ -156,7 +154,7 @@ def export_tflite_int8(model: str, model_keras: tf.keras.Model) -> None:
     converter.representative_dataset = representative_dataset_gen
     converter.target_spec.supported_ops = [
         tf.lite.OpsSet.TFLITE_BUILTINS_INT8,
-        tf.lite.OpsSet.SELECT_TF_OPS,
+        tf.lite.OpsSet.SELECT_TF_OPS
     ]
     converter.inference_input_type = tf.uint8
     converter.inference_output_type = tf.uint8
@@ -167,28 +165,46 @@ def export_tflite_int8(model: str, model_keras: tf.keras.Model) -> None:
     return
 
 
-def export_tflite(model: str) -> None:
-    if not os.path.isfile(f'{model}.weights'):
-        print(f'ERROR: {model}.weights not found')
+def export_tflite(model: str, imgsize: List[int]) -> None:
+    weights_torch = f'{model}.pt'
+    if not os.path.isfile(weights_torch):
+        print(f'ERROR: {weights_torch} not found')
         return
-    # load model
-    image_shape = (IMAGE_SIZE, IMAGE_SIZE, 3)  # NHWC
-    input_shape = (1, *image_shape)
-    model_keras = MODEL_CLASS[model](nc=NUM_CLASS)
-    model_keras.build(input_shape=input_shape)
-    # dummy run
-    dummy_image_tf = np.random.randint(256, size=input_shape)
-    dummy_image_tf = (dummy_image_tf / 255.0).astype(np.float32)
-    dummy_image_tf = tf.convert_to_tensor(
-        dummy_image_tf, dtype=np.float32
+    # dummy image
+    dummy_image_torch = torch.zeros((1, 3, *imgsize))  # NCHW
+    # Load PyTorch model
+    weights_torch = f'{model}.pt'
+    model_torch = torch.load(
+        weights_torch,
+        map_location='cpu'
+    )['model'].float()  # .fuse()
+    model_torch.eval()
+    # export=True to export Detect Layer
+    model_torch.model[-1].export = False
+    # dry run
+    y = model_torch(dummy_image_torch)
+    # number of classes
+    nclasses = y[0].shape[-1] - 5
+    # load configuration for the model
+    path_config = f'models/{model}.yaml'
+    with open(path_config, 'rt') as rf:
+        config = yaml.safe_load(rf)
+    # TensorFlow Keras export
+    model_keras = convert_tf_keras_model(
+        model=model,
+        imgsize=imgsize,
+        model_torch=model_torch,
+        nclasses=nclasses,
+        config=config
     )
-    _ = model_keras(dummy_image_tf)
-    # model_keras.summary()
-    # load weights and export flat buffers
-    load_darknet_weights(model=model, model_keras=model_keras)
+    # TensorFlow GraphDef export
+    # export_tf_graphdef(model=model, model_keras=model_keras)
+    # TFLite model export
     export_tflite_fp32(model=model, model_keras=model_keras)
     export_tflite_fp16(model=model, model_keras=model_keras)
-    export_tflite_int8(model=model, model_keras=model_keras)
+    export_tflite_int8(
+        model=model, imgsize=imgsize, model_keras=model_keras
+    )
     return
 
 
@@ -241,11 +257,20 @@ def test_tflite(model: str, mode: str) -> None:
     return
 
 
-if __name__ == '__main__':
-    # convert to tflite
-    for model in ['yolov3-tiny', 'yolov3', 'yolov4']:
-        export_tflite(model=model)
-    # test tflite
-    for model in ['yolov3-tiny', 'yolov3', 'yolov4']:
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-s', '--imgsize', nargs='+', type=int,
+        default=[IMAGE_SIZE, IMAGE_SIZE],
+        help='image size'
+    )  # height, width
+    args = parser.parse_args()
+    if len(args.imgsize) == 1:
+        imgsize = args.imgsize * 2
+    else:
+        imgsize = args.imgsize[:2]
+    for x in ['s', 'm', 'l', 'x']:
+        export_tflite(model=f'yolov5{x}', imgsize=imgsize)
+    for x in ['s', 'm', 'l', 'x']:
         for mode in ['fp32', 'fp16', 'int8']:
-            test_tflite(model=model, mode=mode)
+            test_tflite(model=f'yolov5{x}', mode=mode)

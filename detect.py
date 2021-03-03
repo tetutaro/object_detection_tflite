@@ -115,7 +115,16 @@ def main(
     fontsize: int,
     fastforward: int
 ) -> None:
-    if model in ['yolov3-tiny', 'yolov3', 'yolov4']:
+    if model in [f'yolov5{x}' for x in ['s', 'm', 'l', 'x']]:
+        model_base = f'yolov5/{model}'
+        if quant in ['fp16', 'int8']:
+            model_quant = '_' + quant
+        elif quant == 'tpu':
+            model_quant = '_int8_edgetpu'
+        else:
+            model_quant = '_fp32'
+        model_path = f'{model_base}{model_quant}.tflite'
+    elif model in ['yolov3-tiny', 'yolov3', 'yolov4']:
         model_base = f'yolo/{model}'
         if quant in ['fp16', 'int8']:
             model_quant = '_' + quant

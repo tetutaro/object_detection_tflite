@@ -6,6 +6,7 @@ FEATURES:
 - Object detection for streaming video shot by (MacBook, RaspberryPi) Camera Module
 - Fast object detection using Google Coral Edge TPU
 - You can use YOLO V3 and YOLO V4
+- *(NEW)* You can use YOLO V5
 - Object detection for pre-recorded videos and photos
 - Face detection and age,gender estimation
 
@@ -34,8 +35,8 @@ FEATURES:
         - `ID 18d1:9302 Google Inc.`
 - download pretrained TFlite weights
     - `> ./download_models.sh`
-- If you want to use YOLO, see [Readme of YOLO](https://github.com/tetutaro/object_detection_tflite/blob/master/yolo/README.md)
-    - you can use YOLO V3 tiny, YOLO V3 and YOLO V4
+- If you want to use YOLO V3/V4, see [Readme of YOLO](https://github.com/tetutaro/object_detection_tflite/blob/master/yolo/README.md)
+- *(NEW)* If you want to use YOLO V5, see [Readme of YOLO V5](https://github.com/tetutaro/object_detection_tflite/blob/master/yolov5/README.md)
 
 ## object detection
 
@@ -44,9 +45,13 @@ FEATURES:
     - `--model <model>`: model to use (default: `coco`)
         - `coco`: `models/mobilenet_ssd_v2_coco_quant_postpresss*.tflite`
         - `face`: `models/mobilenet_ssd_v2_face_quant_postpresss*.tflite`
-        - `yolov3-tiny`: `yolo/yolov3-tiny*.tflite`
-        - `yolov3`: `yolo/yolov3*.tflite`
-        - `yolov4`: `yolo/yolov4*.tflite`
+        - `yolov3-tiny`: `yolo/yolov3-tiny_*.tflite`
+        - `yolov3`: `yolo/yolov3_*.tflite`
+        - `yolov4`: `yolo/yolov4_*.tflite`
+        - `yolov5s`: `yolov5/yolov5s_*.tflite`
+        - `yolov5m`: `yolov5/yolov5m_*.tflite`
+        - `yolov5l`: `yolov5/yolov5l_*.tflite`
+        - `yolov5x`: `yolov5/yolov5x_*.tflite`
     - `--quant <quant>`: quantization level (default: `fp32`)
         - `fp32`: float32
         - `fp16`: float16
@@ -64,6 +69,7 @@ FEATURES:
     - `--vflip/--no-vflip`: flip image vertically (default: True (RaspberryPi) False (MacOS))
     - `--fontsize <fontsize>`: fontsize of text written within the output image (default: 20)
     - `--media <filename>`: pre-recorded video or photo (default: None)
+        - if you want to detect object from camera, don't set this
     - `--fastforward <skip>`: skip some frames (pre-recorded video only) (default: 1(no skip))
 
 ## face detection and age/gender estimation
