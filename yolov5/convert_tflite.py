@@ -25,21 +25,25 @@ IMAGE_SIZE = 640
 
 def convert_tf_keras_model(
     model: str,
-    imgsize: List[int],
+    imgsize: List[int, int],
     model_torch: torch.nn.Module,
     nclasses: int,
     config: Dict
 ) -> tf.keras.Model:
+    # convert PyTorch weights to TensorFlow
     model_tf = tf_Model(
         model_torch=model_torch,
         nclasses=nclasses,
         config=config
     )
-    dummy_image_tf = tf.zeros((1, *imgsize, 3))  # NHWC
     m = model_tf.model.layers[-1]
     assert isinstance(m, tf_Detect), "the last layer must be Detect"
     m.training = False
-    _ = model_tf.predict(dummy_image_tf)
+    # dummy run and check output
+    dummy_image_tf = tf.zeros((1, *imgsize, 3))  # NHWC
+    y = model_tf.predict(dummy_image_tf)
+    for yy in y:
+        _ = yy.numpy()
     # create keras model
     inputs_keras = tf.keras.Input(
         shape=(*imgsize, 3),
@@ -53,29 +57,6 @@ def convert_tf_keras_model(
     )
     # model_keras.summary()
     return model_keras
-
-
-def export_tf_graphdef(model: str, model_keras: tf.keras.Model) -> None:
-    # https://github.com/leimao/Frozen_Graph_TensorFlow
-    graphdef_path = f'{model}.pb'
-    if os.path.isfile(graphdef_path):
-        return
-    full_model = tf.function(lambda x: model_keras(x))
-    full_model = full_model.get_concrete_function(
-        tf.TensorSpec(
-            model_keras.inputs[0].shape,
-            model_keras.inputs[0].dtype
-        )
-    )
-    frozen_func = convert_variables_to_constants_v2(full_model)
-    frozen_func.graph.as_graph_def()
-    tf.io.write_graph(
-        graph_or_graph_def=frozen_func.graph,
-        logdir='.',
-        name=graphdef_path,
-        as_text=False
-    )
-    return
 
 
 def export_tflite_fp32(model: str, model_keras: tf.keras.Model) -> None:
@@ -110,7 +91,7 @@ def export_tflite_fp16(model: str, model_keras: tf.keras.Model) -> None:
 
 def export_tflite_int8(
     model: str,
-    imgsize: List[int],
+    imgsize: List[int, int],
     model_keras: tf.keras.Model
 ) -> None:
     path_tflite = f'{model}_int8.tflite'
@@ -128,8 +109,8 @@ def export_tflite_int8(
             scale = min(imgsize[0] / ih, imgsize[1] / iw)
             nh = int(ih * scale)
             nw = int(iw * scale)
-            oh = (IMAGE_SIZE - nh) // 2
-            ow = (IMAGE_SIZE - nw) // 2
+            oh = (imgsize[0] - nh) // 2
+            ow = (imgsize[1] - nw) // 2
             if scale >= 1:
                 interpolation = cv2.INTER_CUBIC
             else:
@@ -165,7 +146,7 @@ def export_tflite_int8(
     return
 
 
-def export_tflite(model: str, imgsize: List[int]) -> None:
+def export_tflite(model: str, imgsize: List[int, int]) -> None:
     weights_torch = f'{model}.pt'
     if not os.path.isfile(weights_torch):
         print(f'ERROR: {weights_torch} not found')
@@ -197,8 +178,6 @@ def export_tflite(model: str, imgsize: List[int]) -> None:
         nclasses=nclasses,
         config=config
     )
-    # TensorFlow GraphDef export
-    # export_tf_graphdef(model=model, model_keras=model_keras)
     # TFLite model export
     export_tflite_fp32(model=model, model_keras=model_keras)
     export_tflite_fp16(model=model, model_keras=model_keras)

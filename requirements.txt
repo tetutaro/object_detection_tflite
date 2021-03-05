@@ -2,8 +2,12 @@ opencv-contrib-python
 tensorflow
 tensorflow-addons
 torch
+torchvision
+pandas
+seaborn
 Pillow
 numpy
 matplotlib
 PyYAML
+tqdm
 click
