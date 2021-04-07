@@ -131,3 +131,5 @@ dmypy.json
 models
 TakaoGothic.ttf
 *.mov
+*.png
+*.jpg

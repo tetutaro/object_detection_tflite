@@ -12,35 +12,28 @@ import cv2
 import platform
 if platform.system() == 'Linux':  # RaspberryPi
     import picamera
+from src.config import Config
 
 FRAME_PER_SECOND = 30
 
 
 class Camera(object):
-    def __init__(
-        self: Camera,
-        width: int,
-        height: int,
-        threshold: float,
-        fontsize: int,
-        fastforward: int = 1
-    ) -> None:
-        self._dims = (width, height)
-        self._buffer = Image.new('RGBA', self._dims)
+    def __init__(self: Camera, config: Config) -> None:
+        self.config = config
+        self._buffer = Image.new(
+            'RGBA', (self.config.camera_width, self.config.camera_height)
+        )
         self._overlay = None
         self._draw = ImageDraw.Draw(self._buffer)
         self._default_color = (0xff, 0xff, 0xff, 0xff)
         self._font = ImageFont.truetype(
-            font='TakaoGothic.ttf', size=fontsize
+            font='TakaoGothic.ttf', size=config.fontsize
         )
-        self._threshold = threshold
-        self._fontsize = fontsize
-        self._fastforward = fastforward
         return
 
     def clear(self: Camera) -> None:
         self._draw.rectangle(
-            (0, 0) + self._dims,
+            (0, 0, self.config.camera_width, self.config.camera_height),
             fill=(0, 0, 0, 0x00)
         )
         return
@@ -52,8 +45,8 @@ class Camera(object):
 
     def draw_time(self: Camera, elapsed_ms: float) -> None:
         text = 'Elapsed Time: %.1f[ms]' % elapsed_ms
-        if self._fastforward > 1:
-            text += ' (speed x%d)' % self._fastforward
+        if self.config.fastforward > 1:
+            text += ' (speed x%d)' % self.config.fastforward
         self._draw_text(
             text, location=(5, 5), color=None
         )
@@ -62,15 +55,17 @@ class Camera(object):
     def draw_count(self: Camera, count: int) -> None:
         self._draw_text(
             'Detected Objects: %d' % count,
-            location=(5, 5 + self._fontsize), color=None
+            location=(5, 5 + self.config.fontsize), color=None
         )
         return
 
     def _draw_object(self: Camera, object: Dict) -> None:
         prob = object['prob']
-        color = tuple(np.array(np.array(cm.jet(
-            (prob - self._threshold) / (1.0 - self._threshold)
-        )) * 255, dtype=np.uint8).tolist())
+        color = tuple(np.array(np.array(cm.jet((
+            prob - self.config.conf_threshold
+        ) / (
+            1.0 - self.config.conf_threshold
+        ))) * 255, dtype=np.uint8).tolist())
         self._draw_box(
             rect=object['bbox'], color=color
         )
@@ -81,7 +76,7 @@ class Camera(object):
             self._draw_text(
                 name, location=(xoff, yoff), color=color
             )
-            yoff += self._fontsize
+            yoff += self.config.fontsize
         self._draw_text(
             '%.3f' % prob, location=(xoff, yoff), color=color
         )
@@ -89,8 +84,8 @@ class Camera(object):
 
     def _draw_box(
         self: Camera,
-        rect: Tuple[int, int, int, int],
-        color: Optional[Tuple[int, int, int, int]]
+        rect: Tuple[int],
+        color: Optional[Tuple[int]]
     ) -> None:
         outline = color or self._default_color
         self._draw.rectangle(rect, fill=None, outline=outline)
@@ -113,39 +108,31 @@ class Camera(object):
             return
         self._overlay = self._camera.add_overlay(
             self._buffer.tobytes(),
-            format='rgba', layer=3, size=self._dims
+            format='rgba', layer=3,
+            size=(self.config.camera_width, self.config.camera_height)
         )
         self._overlay.update(self._buffer.tobytes())
         return
 
 
-class PiCamera(Camera):
-    def __init__(
-        self: PiCamera,
-        width: int,
-        height: int,
-        hflip: bool,
-        vflip: bool,
-        threshold: float,
-        fontsize: int
-    ) -> None:
-        super().__init__(
-            width=width, height=height,
-            threshold=threshold, fontsize=fontsize
-        )
+class RaspiCamera(Camera):
+    def __init__(self: RaspiCamera, config: Config) -> None:
+        super().__init__(config=config)
         self._camera = picamera.PiCamera(
-            resolution=(width, height),
+            resolution=(
+                self.config.camera_width, self.config.camera_height
+            ),
             framerate=FRAME_PER_SECOND
         )
-        self._camera.hflip = hflip
-        self._camera.vflip = vflip
+        self._camera.hflip = self.config.hflip
+        self._camera.vflip = self.config.vflip
         return
 
-    def start(self: PiCamera) -> None:
+    def start(self: RaspiCamera) -> None:
         self._camera.start_preview()
         return
 
-    def yield_image(self: PiCamera) -> Generator[Image, None]:
+    def yield_image(self: RaspiCamera) -> Generator[Image, None]:
         self._stream = io.BytesIO()
         for _ in self._camera.capture_continuous(
             self._stream,
@@ -157,62 +144,61 @@ class PiCamera(Camera):
             yield image
         return
 
-    def update(self: PiCamera) -> None:
+    def update(self: RaspiCamera) -> None:
         super().update()
         self._stream.seek(0)
         self._stream.truncate()
         return
 
-    def stop(self: PiCamera) -> None:
+    def stop(self: RaspiCamera) -> None:
         self._camera.stop_preview()
         return
 
 
-class CvCamera(Camera):
-    def __init__(
-        self: CvCamera,
-        media: Optional[str],
-        width: int,
-        height: int,
-        hflip: bool,
-        vflip: bool,
-        threshold: float,
-        fontsize: int,
-        fastforward: int = 1
-    ) -> None:
-        if media is None:
+class VideoCamera(Camera):
+    def __init__(self: VideoCamera, config: Config) -> None:
+        if config.media is None:
             self._camera = cv2.VideoCapture(0)
-            self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
-            self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
-            fastforward = 1
+            self._camera.set(
+                cv2.CAP_PROP_FRAME_HEIGHT,
+                float(config.camera_height)
+            )
+            self._camera.set(
+                cv2.CAP_PROP_FRAME_WIDTH,
+                float(config.camera_width)
+            )
         else:
-            self._camera = cv2.VideoCapture(media)
+            self._camera = cv2.VideoCapture(config.media)
         # adjust aspect ratio
-        height = int(self._camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        width = int(self._camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        super().__init__(
-            width=width, height=height,
-            threshold=threshold, fontsize=fontsize, fastforward=fastforward
-        )
+        config.camera_height = int(self._camera.get(
+            cv2.CAP_PROP_FRAME_HEIGHT
+        ))
+        config.camera_width = int(self._camera.get(
+            cv2.CAP_PROP_FRAME_WIDTH
+        ))
+        super().__init__(config=config)
         # set flipcode
-        if hflip:
-            if vflip:
+        if config.hflip:
+            if config.vflip:
                 self.flipcode = -1
             else:
                 self.flipcode = 1
-        elif vflip:
+        elif config.vflip:
             self.flipcode = 0
         else:
             self.flipcode = None
         return
 
-    def start(self: CvCamera) -> None:
+    def start(self: VideoCamera) -> None:
         self.window = 'Object Detection'
         cv2.namedWindow(self.window, cv2.WINDOW_GUI_NORMAL)
-        cv2.resizeWindow(self.window, *self._dims)
+        cv2.resizeWindow(
+            self.window,
+            self.config.camera_width, self.config.camera_height
+        )
         return
 
-    def yield_image(self: CvCamera) -> Generator[Image, None]:
+    def yield_image(self: VideoCamera) -> Generator[Image, None]:
         while True:
             _, image = self._camera.read()
             if image is None:
@@ -224,7 +210,7 @@ class CvCamera(Camera):
             yield Image.fromarray(image.copy()[..., ::-1])
         return
 
-    def update(self: CvCamera) -> None:
+    def update(self: VideoCamera) -> None:
         overlay = np.array(self._buffer, dtype=np.uint8)
         overlay = cv2.cvtColor(overlay, cv2.COLOR_RGBA2BGRA)
         image = cv2.addWeighted(
@@ -237,38 +223,36 @@ class CvCamera(Camera):
             raise KeyboardInterrupt
         return
 
-    def stop(self: CvCamera) -> None:
+    def stop(self: VideoCamera) -> None:
         cv2.destroyAllWindows()
         self._camera.release()
         return
 
 
-class PlCamera(Camera):
-    def __init__(
-        self: PlCamera,
-        media: Optional[str],
-        threshold: float,
-        fontsize: int
-    ) -> None:
-        self.image = Image.open(media)
-        width, height = self.image.size
-        super().__init__(
-            media=media, width=width, height=height,
-            threshold=threshold, fontsize=fontsize
+class ImageCamera(Camera):
+    def __init__(self: ImageCamera, config: Config) -> None:
+        self.image = cv2.imread(config.media)
+        config.camera_height = self.image.shape[0]
+        config.camera_width = self.image.shape[1]
+        config.fastforward = 1
+        super().__init__(config=config)
+        return
+
+    def start(self: ImageCamera) -> None:
+        self.window = 'Object Detection'
+        cv2.namedWindow(self.window, cv2.WINDOW_GUI_NORMAL)
+        cv2.resizeWindow(
+            self.window,
+            self.config.camera_width, self.config.camera_height
         )
         return
 
-    def start(self: PlCamera) -> None:
-        self.window = 'Object Detection'
-        cv2.namedWindow(self.window, cv2.WINDOW_GUI_NORMAL)
-        cv2.resizeWindow(self.window, *self._dims)
+    def yield_image(self: ImageCamera) -> Generator[Image, None]:
+        image = self.image.copy()[..., ::-1]
+        yield Image.fromarray(image)
         return
 
-    def yield_image(self: PlCamera) -> Generator[Image, None]:
-        yield Image.fromarray(self.image.copy()[..., ::-1])
-        return
-
-    def update(self: PlCamera) -> None:
+    def update(self: ImageCamera) -> None:
         overlay = np.array(self._buffer, dtype=np.uint8)
         overlay = cv2.cvtColor(overlay, cv2.COLOR_RGBA2BGRA)
         image = cv2.addWeighted(
@@ -281,50 +265,24 @@ class PlCamera(Camera):
             raise KeyboardInterrupt
         return
 
-    def stop(self: PlCamera) -> None:
+    def stop(self: ImageCamera) -> None:
         cv2.destroyAllWindows()
         return
 
 
-def get_camera(
-    media: Optional[str],
-    width: int,
-    height: int,
-    hflip: bool,
-    vflip: bool,
-    threshold: float,
-    fontsize: int,
-    fastforward: int
-) -> Camera:
-    if media is not None:
-        if not os.path.exists(media):
+def get_camera(config: Config) -> Camera:
+    if config.media is not None:
+        if not os.path.exists(config.media):
             raise ValueError('set existed file')
-        ext = os.path.splitext(media)[1]
-        if ext in ['jpg', 'png']:
-            camera = PlCamera(
-                media=media, threshold=threshold, fontsize=fontsize
-            )
+        ext = os.path.splitext(config.media)[1]
+        if ext in ['.jpg', '.png']:
+            camera = ImageCamera(config=config)
         else:
-            camera = CvCamera(
-                media=media,
-                width=width, height=height,
-                hflip=hflip, vflip=vflip,
-                threshold=threshold, fontsize=fontsize,
-                fastforward=fastforward
-            )
+            camera = VideoCamera(config=config)
     elif platform.system() == 'Linux':  # RaspberryPi
-        camera = PiCamera(
-            width=width, height=height,
-            hflip=hflip, vflip=vflip,
-            threshold=threshold, fontsize=fontsize
-        )
+        camera = RaspiCamera(config=config)
     elif platform.system() == 'Darwin':  # MacOS
-        camera = CvCamera(
-            media=media,
-            width=width, height=height,
-            hflip=hflip, vflip=vflip,
-            threshold=threshold, fontsize=fontsize
-        )
+        camera = VideoCamera(config=config)
     else:
         raise NotImplementedError()
     return camera

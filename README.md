@@ -1,16 +1,32 @@
 # object_detection_tflite
 
-Object Detection using TensorFlow Lite models.
+Object Detection using TensorFlow Lite
 
-FEATURES:
+## purpose of this repository
+
+The purpose of this repository is to run object recognition using the TensorFlow Lite models for various media (image, video and streaming video).
+
+If you want to get the TensorFlow binary of YOLO, see [yolo_various_framework](https://github.com/tetutaro/yolo_various_framework)
+
+## features of this repository
+
 - Object detection for streaming video shot by (MacBook, RaspberryPi) Camera Module
-- Fast object detection using Google Coral Edge TPU
-- You can use YOLO V3 and YOLO V4
-- *(NEW)* You can use YOLO V5
 - Object detection for pre-recorded videos and photos
-- Face detection and age,gender estimation
+- Fast object detection using Google Coral Edge TPU
+- You can use YOLO V3, V4 and V5
+    - convert TensorFlow Lite binaries using [yolo_various_framework](https://github.com/tetutaro/yolo_various_framework)
 
-## setup of object detection
+### extras
+
+- Face detection and age,gender estimation for detected faces
+    - `face_agender.py`
+- Image preprocessing and Classification
+    - Motion Detection and Classification of moving objects
+        - `motion_detect.py`
+    - Selective Search and Classificaiton of found objects
+        - `selective_detect.py`
+
+## setup for object detection
 
 - (Optional: RaspberryPi) prepare RaspberryPi and RaspberryPi Camera Module
 - install required Python packages
@@ -35,84 +51,175 @@ FEATURES:
         - `ID 18d1:9302 Google Inc.`
 - download pretrained TFlite weights
     - `> ./download_models.sh`
-- If you want to use YOLO V3/V4, see [Readme of YOLO](https://github.com/tetutaro/object_detection_tflite/blob/master/yolo/README.md)
-- *(NEW)* If you want to use YOLO V5, see [Readme of YOLO V5](https://github.com/tetutaro/object_detection_tflite/blob/master/yolov5/README.md)
 
-## object detection
+### setup for YOLO
 
-- `> detect.py [OPTIONS]`
-- OPTIONS:
-    - `--model <model>`: model to use (default: `coco`)
-        - `coco`: `models/mobilenet_ssd_v2_coco_quant_postpresss*.tflite`
-        - `face`: `models/mobilenet_ssd_v2_face_quant_postpresss*.tflite`
-        - `yolov3-tiny`: `yolo/yolov3-tiny_*.tflite`
-        - `yolov3`: `yolo/yolov3_*.tflite`
-        - `yolov4`: `yolo/yolov4_*.tflite`
-        - `yolov5s`: `yolov5/yolov5s_*.tflite`
-        - `yolov5m`: `yolov5/yolov5m_*.tflite`
-        - `yolov5l`: `yolov5/yolov5l_*.tflite`
-        - `yolov5x`: `yolov5/yolov5x_*.tflite`
-    - `--quant <quant>`: quantization level (default: `fp32`)
-        - `fp32`: float32
-        - `fp16`: float16
-        - `int8`: uint8
-        - `tpu`: uint8 and compiled for TPU
-        - if you want to use TPU, select `tpu`
-        - if you select `coco` or `face` model, select `fp32` or `tpu`
-    - `--target <target>`: what to detect (default: `all`)
-        - `all`: all objects written in `models/coco_labels.txt`
-        - you can indicate one object which is written in `models/coco_labels.txt` (cf. `bird`, `person`, ...)
-    - `--threshold <threshold>`: threshold of probability which shown in otput (default: 0.5)
-    - `--width <width>`: width of captured image (default: 1280)
-    - `--height <height>`: height of captured image (default: 720)
-    - `--hflip/--no-hflip`: flip image horizontally (default: True (RaspberryPi) False (MacOS))
-    - `--vflip/--no-vflip`: flip image vertically (default: True (RaspberryPi) False (MacOS))
-    - `--fontsize <fontsize>`: fontsize of text written within the output image (default: 20)
-    - `--media <filename>`: pre-recorded video or photo (default: None)
-        - if you want to detect object from camera, don't set this
-    - `--fastforward <skip>`: skip some frames (pre-recorded video only) (default: 1(no skip))
+- convert pre-trained weights to TensorFlow Lite binaries using [yolo_various_framework](https://github.com/tetutaro/yolo_various_framework)
+    - clone that repository
+    - download and convert pre-trained weights according to README of that repository
+    - (Optional) compile TensorFLow Lite binaries for Edge TPU
+        - see [README of yolo_various_framework/weights](https://github.com/tetutaro/yolo_various_framework/blob/main/weights/README.md)
+        - I don't recommend that because they are tooooo slow (most of subgraph in that models cannot be mapped on the TPUs)
+        - for the same reason, I don't recommend using TensorFlow Lite model with full(int8) quantization
+    - copy TensorFlow Lite binaries under the `models` directory
+        - `> cp [directory of yolo_various_framework]/weights/yolo/*.tflite models/.`
+        - `> cp [directory of yolo_various_framework]/weights/yolov5/*.tflite models/.`
 
-## face detection and age/gender estimation
+### setup of face detection and age,gender estimation
 
-- `> face_agender.py [OPTIONS]`
-- OPTIONS are about the same as `detect.py`
-    - you need not select `model`
-    - you need not select `quant`
-        - if you want to use tpu, add `--tpu`
-    - you need not select `target`
+- see [Readme of agender](https://github.com/tetutaro/object_detection_tflite/blob/master/agender/README.md)
 
-## setup of agender model
+## usage: object detection
 
-- see [Readme of Agender](https://github.com/tetutaro/object_detection_tflite/blob/master/agender/README.md)
+```
+usage: detect.py [-h]
+                 [--media MEDIA]
+                 [--height HEIGHT]
+                 [--width WIDTH]
+                 [--hflip] [--vflip]
+                 [--model {ssd,face,yolov3-tiny,yolov3,yolov3-spp,yolov4-tiny,yolov4,yolov5s,yolov5m,yolov5l,yolov5x}]
+                 [--quant {fp32,fp16,int8,tpu}]
+                 [--target TARGET]
+                 [--iou-threshold IOU_THRESHOLD]
+                 [--conf-threshold CONF_THRESHOLD]
+                 [--fontsize FONTSIZE]
+                 [--fastforward FASTFORWARD]
 
-## motion detection and object detection
+detect object from various media
 
-- `> motion_detect.py [OPTIONS]`
-- OPTIONS are about the same `detect.py`
-    - `--model` (default: `mobilenet`)
-        - `mobilenet`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/imagenet_labels.txt`
-        - `bird`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_bird_labels.txt`
-        - `insect`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_insect_labels.txt`
-        - `plant`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_plant_labels.txt`
-    - you need not select `quant`
-        - if you want to use tpu, add `--tpu`
+optional arguments:
+  -h, --help            show this help message and exit
+  --media MEDIA         filename of image/video
+                        (if not set, use streaming video from camera)
+  --height HEIGHT       camera image height
+  --width WIDTH         camera image width
+  --hflip               flip horizontally
+  --vflip               flip vertically
+  --model {ssd,face,yolov3-tiny,yolov3,yolov3-spp,yolov4-tiny,yolov4,yolov5s,yolov5m,yolov5l,yolov5x}
+                        object detection model
+  --quant {fp32,fp16,int8,tpu}
+                        quantization mode (or use EdgeTPU)
+  --target TARGET       the target type of detecting object (default: all)
+  --iou-threshold IOU_THRESHOLD
+                        the IoU threshold of NMS
+  --conf-threshold CONF_THRESHOLD
+                        the confidence score threshold of NMS
+  --fontsize FONTSIZE   fontsize to display
+  --fastforward FASTFORWARD
+                        frame interval for object detection
+                        (default: 1 = detect every frame)
+```
 
-## selective search and object detection
+### usage: face detection and age,gender estimation
 
-- `> selective_detect.py [OPTIONS]`
-- OPTIONS are about the same `detect.py`
-    - `--model` (default: `mobilenet`)
-        - `mobilenet`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/imagenet_labels.txt`
-        - `bird`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_bird_labels.txt`
-        - `insect`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_insect_labels.txt`
-        - `plant`: `models/mobilenet_v2_*.tflite`
-            - `--target`: `models/inat_plant_labels.txt`
-    - you need not select `quant`
-        - if you want to use tpu, add `--tpu`
+```
+usage: face_agender.py [-h]
+                       [--media MEDIA]
+                       [--height HEIGHT]
+                       [--width WIDTH]
+                       [--hflip]
+                       [--vflip]
+                       [--quant {fp32,tpu}]
+                       [--target TARGET]
+                       [--conf-threshold CONF_THRESHOLD]
+                       [--fontsize FONTSIZE]
+                       [--fastforward FASTFORWARD]
+
+detect face and estimate age, gender
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --media MEDIA         filename of image/video
+                        (if not set, use streaming video from camera)
+  --height HEIGHT       camera image height
+  --width WIDTH         camera image width
+  --hflip               flip horizontally
+  --vflip               flip vertically
+  --quant {fp32,tpu}    quantization mode (or use EdgeTPU)
+  --target TARGET       the target type of detecting object (default: all)
+  --conf-threshold CONF_THRESHOLD
+                        the confidence score threshold of NMS
+  --fontsize FONTSIZE   fontsize to display
+  --fastforward FASTFORWARD
+                        frame interval for object detection
+                        (default: 1 = detect every frame)
+```
+
+### usage: motion detection and object classification
+
+```
+usage: motion_detect.py [-h]
+                        [--media MEDIA]
+                        [--height HEIGHT]
+                        [--width WIDTH]
+                        [--hflip]
+                        [--vflip]
+                        [--model {mobilenet,bird,insect,plant}]
+                        [--quant {fp32,tpu}]
+                        [--target TARGET]
+                        [--prob-threshold PROB_THRESHOLD]
+                        [--fontsize FONTSIZE]
+                        [--fastforward FASTFORWARD]
+
+motion detection + image classification
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --media MEDIA         filename of image/video
+                        (if not set, use streaming video from camera)
+  --height HEIGHT       camera image height
+  --width WIDTH         camera image width
+  --hflip               flip horizontally
+  --vflip               flip vertically
+  --model {mobilenet,bird,insect,plant}
+                        object detection model
+  --quant {fp32,tpu}    quantization mode (or use EdgeTPU)
+  --target TARGET       the target type of detecting object (default: all)
+  --prob-threshold PROB_THRESHOLD
+                        the hreshold of probability
+  --fontsize FONTSIZE   fontsize to display
+  --fastforward FASTFORWARD
+                        frame interval for object detection
+                        (default: 1 = detect every frame)
+```
+
+### usage: selective search and object classification
+
+```
+usage: selective_detect.py [-h]
+                           [--media MEDIA]
+                           [--height HEIGHT]
+                           [--width WIDTH]
+                           [--hflip]
+                           [--vflip]
+                           [--model {mobilenet,bird,insect,plant}]
+                           [--quant {fp32,tpu}]
+                           [--target TARGET]
+                           [--prob-threshold PROB_THRESHOLD]
+                           [--iou-threshold IOU_THRESHOLD]
+                           [--fontsize FONTSIZE]
+                           [--fastforward FASTFORWARD]
+
+selective search + image classification
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --media MEDIA         filename of image/video
+                        (if not set, use streaming video from camera)
+  --height HEIGHT       camera image height
+  --width WIDTH         camera image width
+  --hflip               flip horizontally
+  --vflip               flip vertically
+  --model {mobilenet,bird,insect,plant}
+                        object detection model
+  --quant {fp32,tpu}    quantization mode (or use EdgeTPU)
+  --target TARGET       the target type of detecting object (default: all)
+  --prob-threshold PROB_THRESHOLD
+                        the hreshold of probability
+  --iou-threshold IOU_THRESHOLD
+                        the IoU threshold of NMS
+  --fontsize FONTSIZE   fontsize to display
+  --fastforward FASTFORWARD
+                        frame interval for object detection
+                        (default: 1 = detect every frame)
+```

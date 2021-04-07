@@ -1,6 +1,0 @@
-*.weights
-*.tflite
-*.log
-coco.names
-val2017.zip
-val2017
